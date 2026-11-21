@@ -1,0 +1,10 @@
+{
+  "name": "FluxKit",
+  "version": "0.1.0",
+  "description": "SwiftUI-style declarative UI for the M5Stack Tab5 (ESP32-P4), pre-rendered at boot",
+  "keywords": "ui, swiftui, m5stack, tab5, esp32-p4, display",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "dependencies": { "m5stack/M5Unified": "*", "m5stack/M5GFX": "*" },
+  "build": { "srcDir": "src" }
+}
