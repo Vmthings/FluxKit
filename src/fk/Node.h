@@ -33,6 +33,8 @@ class Node : public std::enable_shared_from_this<Node> {
   std::function<void()> tap;
   std::string id;
   bool forceLayer = false;
+  int maxLen = 0; bool secureText = false;                       // TextField
+  std::string returnLabel = "Done", extraCharset, initialText;     // TextField
   bool canDisable = false, startDisabled = false;  // .disabled(): pre-render enabled + disabled + error looks
   bool hasAppear = false; Appear appear;
   enum class Shape { None, Rect, Circle, Capsule } shape = Shape::None;

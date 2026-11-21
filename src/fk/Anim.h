@@ -5,13 +5,14 @@
 
 namespace fk {
 
-enum class Curve { Linear, EaseIn, EaseOut, EaseInOut, Spring };
+enum class Curve { Linear, EaseIn, EaseOut, EaseInOut, Spring, CubicBezier };
 
 struct Animation {
   uint32_t duration = 300;  // ms; 0 = apply immediately
   Curve curve = Curve::EaseOut;
   uint32_t delayMs = 0;
   float bounce = 0.3f;  // Spring only: 0 = no overshoot, ~0.5 = bouncy
+  float bz[4] = {0.42f, 0.f, 0.58f, 1.f};  // CubicBezier control points x1,y1,x2,y2 (CSS ease-in-out by default)
 
   static Animation none() { return Animation{0, Curve::Linear, 0, 0.f}; }
   static Animation linear(uint32_t ms = 300) { return Animation{ms, Curve::Linear, 0, 0.f}; }
@@ -19,10 +20,17 @@ struct Animation {
   static Animation easeOut(uint32_t ms = 300) { return Animation{ms, Curve::EaseOut, 0, 0.f}; }
   static Animation easeInOut(uint32_t ms = 300) { return Animation{ms, Curve::EaseInOut, 0, 0.f}; }
   static Animation spring(uint32_t ms = 480, float bounce = 0.3f) { return Animation{ms, Curve::Spring, 0, bounce}; }
+  // CSS-style cubic-bezier(x1, y1, x2, y2)
+  static Animation cubicBezier(float x1, float y1, float x2, float y2, uint32_t ms = 300) {
+    Animation a; a.duration = ms; a.curve = Curve::CubicBezier; a.bounce = 0.f;
+    a.bz[0] = x1; a.bz[1] = y1; a.bz[2] = x2; a.bz[3] = y2; return a;
+  }
+  // cubic-bezier(0.42, 0, 0.58, 1): the standard "ease-in-out"
+  static Animation bezierInOut(uint32_t ms = 300) { return cubicBezier(0.42f, 0.f, 0.58f, 1.f, ms); }
   Animation delay(uint32_t ms) const { Animation a = *this; a.delayMs = ms; return a; }
 };
 
-float evalCurve(Curve c, float t, float bounce);
+float evalCurve(Curve c, float t, float bounce, const float* bz = nullptr);
 
 // "Appear" = how a view enters when its screen is shown (start state -> rest state).
 struct Appear {
@@ -51,6 +59,7 @@ class Animator {
     uint32_t start = 0, dur = 0;
     Curve curve = Curve::Linear;
     float bounce = 0;
+    float bz[4] = {0.42f, 0.f, 0.58f, 1.f};
     std::function<void(float)> upd;
     std::function<void()> done;
   };

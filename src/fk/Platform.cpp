@@ -27,6 +27,7 @@ void present(int x, int y, int w, int h, const uint16_t* px) {
 }
 bool touch(int& x, int& y) { x = g_tx; y = g_ty; return g_down; }
 void pump() {}
+void powerOff() { log("power off requested"); }
 const std::vector<uint16_t>& hostFramebuffer() { return g_fb; }
 void hostSetTime(uint32_t ms) { g_time = ms; }
 void hostSetTouch(bool d, int x, int y) { g_down = d; g_tx = x; g_ty = y; }
@@ -37,6 +38,7 @@ void hostSetSize(int w, int h) { g_w = w; g_h = h; }
 // ------------------------------------------------------- M5Unified / M5GFX
 #include <M5Unified.h>
 #include "esp_heap_caps.h"
+#include "esp_sleep.h"
 
 namespace fk { namespace platform {
 
@@ -74,6 +76,11 @@ bool touch(int& x, int& y) {
   return false;
 }
 void pump() { M5.update(); }
+void powerOff() {
+  M5.Display.setBrightness(0);
+  M5.Power.powerOff();       // cuts power on boards that support it
+  esp_deep_sleep_start();    // fallback: lowest-power state we can reach
+}
 
 }}  // namespace
 #endif

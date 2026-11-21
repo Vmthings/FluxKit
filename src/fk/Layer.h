@@ -14,9 +14,11 @@ struct Layer {
   std::vector<SurfacePtr> frames;
   std::shared_ptr<Surface565> p565;  // alternative to frames[0] for opaque single-frame layers (fast path)
   int frame = 0;
-  bool hasPixels() const { return p565 ? p565->w > 0 : (!frames.empty() && frames[0]->w > 0); }
-  int pixW() const { return p565 ? p565->w : frames[0]->w; }
-  int pixH() const { return p565 ? p565->h : frames[0]->h; }
+  bool isSolid = false;      // flat colour fill (no memory): used for the power-off fade
+  uint16_t solid565 = 0;
+  bool hasPixels() const { return isSolid || (p565 ? p565->w > 0 : (!frames.empty() && frames[0]->w > 0)); }
+  int pixW() const { return isSolid ? w : p565 ? p565->w : frames[0]->w; }
+  int pixH() const { return isSolid ? h : p565 ? p565->h : frames[0]->h; }
   float pixelScale = 1.f;  // surface pixels per logical unit (<1 for low-res blur backdrops)
 
   // rest geometry, parent-layer space (logical units)
@@ -36,6 +38,7 @@ struct Layer {
   std::function<void(bool down)> onPress;     // custom press visuals (replaces pressFeedback)
   std::function<void(bool enabled)> setEnabled;  // set on views marked .disabled()
   std::function<void()> onTap;
+  int repeatMs = 0;  // hold-to-repeat: fires onTap every N ms while held (backspace)
   std::function<void(int phase, float lx, float ly)> onTouch;  // 0 down, 1 move, 2 up (layer-local coords)
   bool scrollable = false;
   Layer* scrollContent = nullptr;
@@ -64,6 +67,15 @@ struct Layer {
     return kids.back().get();
   }
 };
+
+// Create a child layer from an existing surface (shared, not copied).
+inline Layer* addLayer(Layer* parent, SurfacePtr s, int lx, int ly, int lw, int lh) {
+  auto L = std::make_unique<Layer>();
+  L->x = lx; L->y = ly; L->w = lw; L->h = lh;
+  L->absX = parent->absX + lx; L->absY = parent->absY + ly;
+  if (s) L->frames.push_back(std::move(s));
+  return parent->add(std::move(L));
+}
 
 class Compositor {
  public:
@@ -96,6 +108,7 @@ class Compositor {
   void composeTo(Rect d, uint16_t* tile);
   void drawLayer(Layer* l, const Rect& d, uint16_t* tile);
   void draw565(Layer* l, const Rect& d, uint16_t* tile);
+  void drawSolid(Layer* l, const Rect& d, uint16_t* tile);
 };
 
 }  // namespace fk

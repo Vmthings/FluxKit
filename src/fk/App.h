@@ -14,6 +14,14 @@ struct Config {
   int blurSteps = 2;            // pre-rendered blur levels cross-faded while a popup opens (each costs 1.8 MB per screen)
   int backdropDownscale = 4;    // blur backdrops are stored at 1/N resolution
   bool log = true;
+  // boot splash: shown instantly by fk::begin(), fades out when fk::bake() finishes
+  bool bootSplash = true;
+  std::string bootText = "Rendering";   // the centred text: change it freely
+  bool bootCredit = true;               // grey "Made with FluxKit" + repo URL at the bottom
+  Color bootTop{0x8FD3FF};              // light blue ...
+  Color bootBottom{0x0A1F5C};           // ... to dark blue
+  int keyboardBlur = 34;                // frosted-glass blur behind the keyboard
+  bool dismissKeyboardOnTapOutside = true;
   bool profile = false;         // log compose/present ms per frame once a second (find your bottleneck)
 };
 
@@ -34,6 +42,19 @@ void present(const std::string& popupName);
 void dismiss();
 bool popupOpen();
 void update();  // call from loop(): touch + animation + compositing
+
+// ---- power off: fades the whole screen to black (default cubic-bezier ease-in-out), then powers down.
+// Pass your own `then` to do something else once the screen is black.
+void powerOff(const Animation& fade = Animation::bezierInOut(900), std::function<void()> then = {});
+void cancelPowerOff(const Animation& fade = Animation::bezierInOut(400));
+bool poweringOff();
+
+// ---- text fields / keyboard (see TextField())
+std::string fieldText(const std::string& fieldId);
+void setFieldText(const std::string& fieldId, const std::string& text);
+void focusField(const std::string& fieldId);
+void hideKeyboard();
+bool keyboardVisible();
 
 Animator& animator();
 uint32_t screenWidth();

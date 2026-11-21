@@ -32,7 +32,12 @@ void Compositor::walk(Layer* l, const World& p) {
   l->rect = rectOf(l->wx, l->wy, l->w * l->ws, l->h * l->ws).intersect(l->wclip);
   l->bounds = Rect{};
   l->cover = Rect{};
-  if (l->wvis && l->wo > 0.002f && l->hasPixels()) {
+  if (l->wvis && l->wo > 0.002f && l->isSolid) {
+    int x0 = (int)std::lround(l->wx), y0 = (int)std::lround(l->wy);
+    int x1 = (int)std::lround(l->wx + l->w * l->ws * l->reveal), y1 = (int)std::lround(l->wy + l->h * l->ws);
+    l->bounds = Rect{x0, y0, x1 - x0, y1 - y0}.intersect(l->wclip);
+    l->cover = l->bounds;
+  } else if (l->wvis && l->wo > 0.002f && l->hasPixels()) {
     float rw = l->w * l->ws * l->reveal, rh = l->h * l->ws;
     bool simple = std::fabs(l->ws - 1.f) < 1e-4f && l->pixelScale == 1.f;
     if (simple) {
@@ -162,7 +167,19 @@ void Compositor::draw565(Layer* l, const Rect& d, uint16_t* tile) {
   }
 }
 
+void Compositor::drawSolid(Layer* l, const Rect& d, uint16_t* tile) {
+  Rect r = l->bounds.intersect(d);
+  if (r.empty()) return;
+  uint32_t op = (uint32_t)std::lround(std::clamp(l->wo, 0.f, 1.f) * 255.f), a = (op * 32 + 127) / 255;
+  for (int y = r.y; y < r.bottom(); y++) {
+    uint16_t* dp = tile + (size_t)(y - d.y) * d.w + (r.x - d.x);
+    if (op >= 255) std::fill(dp, dp + r.w, l->solid565);
+    else for (int i = 0; i < r.w; i++) dp[i] = mix565(dp[i], l->solid565, a);
+  }
+}
+
 void Compositor::drawLayer(Layer* l, const Rect& d, uint16_t* tile) {
+  if (l->isSolid) { drawSolid(l, d, tile); return; }
   if (l->p565) { draw565(l, d, tile); return; }
   Rect r = l->bounds.intersect(d);
   if (r.empty()) return;

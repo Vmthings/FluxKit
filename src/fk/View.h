@@ -68,6 +68,12 @@ class View {
   // Disabled look: greyed out. Tapping it fades to red, wiggles, then fades back to grey. All three looks
   // are pre-rendered at bake. Flip at runtime with fk::layer("id").enabled(true/false) (give it an .id()).
   View disabled(bool isDisabled = true) const;
+  // ---- TextField options
+  View secure(bool on = true) const;                   // show dots instead of characters
+  View maxLength(int n) const;                          // default 48
+  View returnKey(const std::string& label) const;      // label of the keyboard's action key ("Done", "Go", "Search"...)
+  View charset(const std::string& extraUtf8) const;    // extra characters the field can display (e.g. "äöüß")
+  View initialText(const std::string& s) const;
   View onTap(std::function<void()> fn) const;  // lifts the view into an interactive layer
   View id(const std::string& name) const;      // lets you find it later: fk::layer("name")
   View appear(Appear a) const;                 // entrance animation when its screen is shown
@@ -98,6 +104,10 @@ View RoundedRectangle(float radius);
 View Circle();
 View Capsule();
 View Divider();
+
+// ---- text input: tap to focus; a blurred keyboard springs up. Read it with fk::fieldText("id").
+View TextField(const std::string& placeholder, std::function<void(const std::string&)> onChange = {},
+               std::function<void(const std::string&)> onSubmit = {});
 
 // ---- controls
 View Button(const std::string& label, std::function<void()> action);

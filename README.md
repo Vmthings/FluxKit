@@ -28,6 +28,8 @@ void loop() { fk::update(); }
 |---|---|
 | Layout | `VStack` `HStack` `ZStack` `Spacer` `ScrollView` `ForEach`; `.padding .margin .frame .fillWidth .spacing .align` |
 | Content | `Text` `TextStates` `Image` `Canvas` `Spinner` `Rectangle` `RoundedRectangle` `Circle` `Capsule` `Divider` |
+| Input | `TextField` (tap → blurred on-screen keyboard springs up; `.secure() .maxLength() .returnKey("Go") .charset("äöü")`); read with `fieldText("id")`, set with `setFieldText`, `focusField`, `hideKeyboard()` |
+| Boot / power | boot splash (`Config::bootText`, shown instantly by `begin()`, fades out after `bake()`); `powerOff()` fades to black with a cubic-bezier ease-in-out, then powers down |
 | Controls | `Button` `Toggle` `Slider` `ProgressBar` (+ any view with `.onTap`); `.disabled()` greys a button out, and tapping it fades it red, wiggles it, then fades back to grey (`layer("id").enabled(true)` re-enables it) |
 | Look | `.background` (solid/`LinearGradient`) `.cornerRadius .border .shadow .material` (frosted glass) `.opacity` |
 | Motion | `.appear(Appear::slideUp())` (staggerable), screen transitions (`Fade/Push/Cover`), popup spring animations, `layer("id").offset/scale/opacity/reveal/frame/play` |
@@ -51,6 +53,23 @@ setDefaultFont(inter);                 // swap the whole UI's font
 ```
 Glyphs are rasterized during `bake()` for exactly the strings you use, so any language your font covers works.
 
+## Boot splash and power off
+```cpp
+Config cfg; cfg.bootText = "Rendering";      // centred text; the gradient is light blue -> dark blue
+fk::begin(cfg);                               // splash is on screen immediately, before the slow bake
+...
+bake();                                       // when it finishes the splash fades into your first screen
+
+powerOff();                                   // cubic-bezier(0.42, 0, 0.58, 1) fade to black, then power down
+powerOff(Animation::cubicBezier(0.65f, 0, 0.35f, 1, 1200), [] { /* your own shutdown */ });
+```
+The splash also shows a grey, semi-transparent "Made with FluxKit" and the repo URL at the bottom (`Config::bootCredit = false` hides it). The power-off overlay is a flat-colour layer, so it costs no memory. `platform::powerOff()` calls `M5.Power.powerOff()` and falls back to deep sleep: **untested on the Tab5**.
+
+## Text input
+`TextField("placeholder")` is a normal view. Tapping it focuses it, a keyboard springs up (rows rise in one after another) on frosted glass baked from the current screen, and the screen lifts so the field stays visible. Shift (double-tap = caps lock), `123` / `#+=` symbol pages, space, hold-to-repeat backspace, and a return key whose label you choose per field (`.returnKey("Go")`). Tapping outside the keyboard dismisses it (`Config::dismissKeyboardOnTapOutside`).
+
+Like everything else it is pre-rendered: each glyph the field can show is rendered once at bake, a typed character is a layer switching to that glyph's frame, and the cursor blink is a 2-frame loop. Typed text must use characters in the field's glyph set (ASCII + `£ ¥ € •` by default; add more with `.charset("äöü")` *and* make sure the font contains them). The keyboard is a QWERTY layout; the cursor always sits at the end (no selection, no cursor movement, no IME). Budget roughly 2 MB of PSRAM for the keyboard, plus ~0.7 MB of blurred glass per screen that has a text field.
+
 ## How "all rendered at boot" works
 * Each view that can move/fade/change (anything with `.onTap`, `.id`, `.appear`, `.opacity`, controls, scroll content) becomes a **layer**: a pre-rendered ARGB surface in PSRAM. Static views are flattened into their parent's layer.
 * Animation only changes layer properties (offset, scale, opacity, frame, reveal), never pixels. A toggle slides its pre-rendered knob; a slider moves the knob and crops the pre-rendered fill; a button swaps to its pre-rendered pressed frame; a `.disabled()` button has three pre-rendered looks (normal, grey, red) and the error animation is a fade plus a damped wiggle of those layers; `TextStates` / `Canvas` / `Spinner` flip between pre-rendered frames.
@@ -62,7 +81,7 @@ Glyphs are rasterized during `bake()` for exactly the strings you use, so any la
 * **Memory is the trade-off.** Layers with transparency (rounded cards, text) are ARGB8888; fully opaque layers (screen backgrounds, blur backdrops) are stored as dithered RGB565 at 1.8 MB per full screen. The bundled example uses ~19 MB of the 32 MB PSRAM (two screens, a popup, a 24-row scroll list). Each blur level costs 1.8 MB per screen that has popups: lower `Config::blurSteps` (default 2) to save memory. `fk::memoryUsed()` reports it. Each tappable view stores a second (pressed) frame.
 * `.material()` blurs what is painted behind it *in the same layer* (and, for popup content, the first screen). Static glass panels work; glass over a different layer does not.
 * Lifted layers draw above static siblings in the same parent.
-* No text input / keyboard, no PNG/JPG decoding (pass pixels via `Surface::fromRGB565/fromARGB`), no kerning (stb_truetype's `kern` table only), vertical `ScrollView` only.
+* No PNG/JPG decoding (pass pixels via `Surface::fromRGB565/fromARGB`), no kerning (stb_truetype's `kern` table only), vertical `ScrollView` only.
 
 ## Status: read this
 Built and verified **on a host build only** (full pipeline: bake, layout, text, blur, popups, navigation, scroll, touch; output inspected as images). It has **not been run on a Tab5**. Expect to touch up:
@@ -81,5 +100,6 @@ src/fk/fonts/          embedded Montserrat + OFL     tools/ttf2h.py   font conve
 test/host_test.cpp     host render test (g++ -DFLUXKIT_HOST)
 test/bench_popup.cpp   host benchmark of popup-open frame cost
 test/disabled_test.cpp host test of disabled-button behaviour
+test/input_test.cpp    host test: splash, text field + keyboard, power off
 ```
 Licenses: FluxKit code is yours to license; `stb_truetype.h` is public domain/MIT; Montserrat is SIL OFL 1.1 (`src/fk/fonts/OFL.txt`).

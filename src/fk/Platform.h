@@ -19,6 +19,7 @@ int height();
 void present(int x, int y, int w, int h, const uint16_t* rgb565);  // contiguous w*h block
 bool touch(int& x, int& y);  // true while a finger is down
 void pump();                 // M5.update()
+void powerOff();             // backlight off + power down (deep sleep fallback)
 
 #ifdef FLUXKIT_HOST
 const std::vector<uint16_t>& hostFramebuffer();

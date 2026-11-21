@@ -1,5 +1,6 @@
 #include <cstring>
 #include "App.h"
+#include "Input.h"
 #include "Node.h"
 #include "Platform.h"
 
@@ -458,6 +459,69 @@ class SliderNode : public Node {
   }
 };
 
+class TextFieldNode : public Node {
+ public:
+  std::string placeholder;
+  std::function<void(const std::string&)> onChange, onSubmit;
+  bool contentFlexW() const override { return true; }
+  Size contentSize(Size ca) override { return Size{ca.w >= Unbounded ? 240 : 0, text::lineHeight(resolvedFont())}; }
+  bool isLayerRoot() const override { return true; }
+  Layer* bake(BakeEnv& env, Layer* parent) override {
+    input::FieldState* fs = input::newField(id);
+    fs->maxLen = maxLen > 0 ? maxLen : 48;
+    fs->secure = secureText;
+    fs->returnLabel = returnLabel;
+    fs->onChange = onChange; fs->onSubmit = onSubmit;
+    input::registerReturnLabel(returnLabel);
+
+    Rect b = layerBounds();
+    Layer* L = makeLayer(env, parent, b);
+    L->hit = true;
+    auto box = std::make_shared<Surface>(b.w, b.h);
+    paintSelf(*box, b.x, b.y, env);
+    L->frames.push_back(box);
+
+    Rect cr = contentRect();
+    int lx = cr.x - b.x, ly = cr.y - b.y;
+    Font f = resolvedFont();
+    Color fg = resolvedFg();
+    int lh = text::lineHeight(f);
+
+    auto ring = std::make_shared<Surface>(b.w, b.h);  // accent outline, faded in on focus
+    raster::strokeRoundRect(*ring, (float)(frame.x - b.x), (float)(frame.y - b.y), (float)frame.w, (float)frame.h, cornerRadius(), 2.5f, theme().accent);
+    fs->ring = L->add(newSubLayer(L, ring, 0, 0, b.w, b.h));
+    fs->ring->opacity = 0.f;
+
+    auto phS = std::make_shared<Surface>(cr.w, cr.h);
+    Painter(*phS).text(placeholder, f, 0.f, (cr.h - lh) / 2.f, theme().secondaryText);
+    fs->ph = L->add(newSubLayer(L, phS, lx, ly, cr.w, cr.h));
+
+    Layer* clipL = L->add(newSubLayer(L, nullptr, lx, ly, cr.w, cr.h));
+    clipL->clip = true;
+    Layer* row = clipL->add(newSubLayer(clipL, nullptr, 0, 0, cr.w, cr.h));
+    auto gs = input::glyphSet(f, fg, input::defaultCharset(extraCharset));
+    for (int i = 0; i < fs->maxLen; i++) {
+      Layer* c = row->add(newSubLayer(row, nullptr, 0, (cr.h - gs->cellH) / 2, gs->cellW, gs->cellH));
+      c->frames = gs->cells;  // shared surfaces: a typed character is just a frame index
+      c->visible = false;
+      fs->chars.push_back(c);
+    }
+    int bh = std::min(cr.h, lh);
+    auto bar = std::make_shared<Surface>(2, bh), none = std::make_shared<Surface>(2, bh);
+    raster::fillRoundRect(*bar, 0, 0, 2, (float)bh, 1.f, Paint(theme().accent));
+    Layer* cur = row->add(newSubLayer(row, bar, 0, (cr.h - bh) / 2, 2, bh));
+    cur->frames.push_back(none);
+    cur->fps = 2.f;  // blink = pre-rendered 2-frame loop
+    cur->visible = false;
+
+    fs->container = L; fs->row = row; fs->cursor = cur; fs->glyphs = gs; fs->innerW = cr.w;
+    L->onTap = [fs]() { input::focus(fs); };
+    input::setText(fs, initialText);
+    input::refresh(fs, false, 0);
+    return L;
+  }
+};
+
 class ProgressNode : public Node {
  public:
   float value = 0;
@@ -537,6 +601,11 @@ View View::font(const std::string& name, int size) const { return font(Font::nam
 View View::foreground(Color c) const { N->hasFg = true; N->fg = c; return *this; }
 View View::multilineAlign(Align a) const { N->textAlign = a; return *this; }
 View View::lineLimit(int n) const { N->lineLimit = n; return *this; }
+View View::secure(bool on) const { N->secureText = on; return *this; }
+View View::maxLength(int n) const { N->maxLen = n; return *this; }
+View View::returnKey(const std::string& l) const { N->returnLabel = l; return *this; }
+View View::charset(const std::string& s) const { N->extraCharset = s; return *this; }
+View View::initialText(const std::string& s) const { N->initialText = s; return *this; }
 View View::onTap(std::function<void()> fn) const { N->tap = std::move(fn); return *this; }
 View View::disabled(bool d) const {
   N->canDisable = true; N->startDisabled = d;
@@ -638,6 +707,20 @@ View Button(View label, std::function<void()> action) {
   return View(n);
 }
 View Button(const std::string& label, std::function<void()> action) { return Button(Text(label), std::move(action)); }
+
+View TextField(const std::string& placeholder, std::function<void(const std::string&)> onChange,
+               std::function<void(const std::string&)> onSubmit) {
+  static int counter = 0;
+  auto n = std::make_shared<TextFieldNode>();
+  n->placeholder = placeholder; n->onChange = std::move(onChange); n->onSubmit = std::move(onSubmit);
+  n->id = "__field" + std::to_string(counter++);
+  n->pad = Insets{14, 18, 14, 18};
+  n->hasBg = true; n->bg = Paint(Color(0xFFFFFF, 28)); n->radius = 16.f;
+  n->hasBorder = true; n->borderColor = Color(0xFFFFFF, 38); n->borderW = 1.5f;
+  n->fillW = true;
+  n->hasFont = true; n->font = Font::regular(24);
+  return View(n);
+}
 
 View Toggle(bool on, std::function<void(bool)> cb) {
   auto n = std::make_shared<ToggleNode>();

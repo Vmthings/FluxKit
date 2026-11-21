@@ -8,7 +8,12 @@ using namespace fk;
 void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
-  fk::begin();
+
+  // begin() shows the boot splash immediately (light-blue -> dark-blue gradient, your text in the middle,
+  // "Made with FluxKit" at the bottom). When bake() finishes it fades into the UI below.
+  Config fk_cfg;
+  fk_cfg.bootText = "Rendering";   // change it: "Starting up", "Hello", ...
+  fk::begin(fk_cfg);
 
   // ---- fonts -------------------------------------------------------------
   // Montserrat is built in: Font::regular / medium / semibold / bold(size).
@@ -39,6 +44,9 @@ void setup() {
           .material(30, Color(0xFFFFFF, 30)).border(Color(0xFFFFFF, 50)).shadow(24, 12),
         // Greyed out until Wi-Fi is on. Tapping it while disabled: fades red, wiggles, fades back to grey.
         Button("Connect", [] { Serial.println("connecting"); }).disabled().id("connect").fillWidth(),
+        // Tap the box: a blurred keyboard springs up and the screen lifts so the field stays visible.
+        TextField("Device name", nullptr, [](const std::string& s) { Serial.println(s.c_str()); })
+            .id("device").returnKey("Save").fillWidth(),
         Button("Settings", [] { push("settings"); }).fillWidth(),
         Button("About", [] { present("about"); }).background(Color(0xFFFFFF, 30)).fillWidth(),
       }).spacing(20).padding(48, 36),
@@ -48,7 +56,9 @@ void setup() {
     ZStack({
       Rectangle().fill(Color(0x0B0B0E)),
       VStack({
-        HStack({Button("‹ Back", [] { pop(); }).background(Color(0xFFFFFF, 24)), Spacer()}).fillWidth(),
+        HStack({Button("‹ Back", [] { pop(); }).background(Color(0xFFFFFF, 24)), Spacer(),
+                // Fades the whole screen to black (cubic-bezier ease-in-out), then powers down.
+                Button("Power off", [] { powerOff(); }).background(Color(0xFF453A))}).fillWidth(),
         ScrollView(VStack(ForEach(24, [](int i) {
           return HStack({Text("Option " + std::to_string(i + 1)), Spacer(), Toggle(i % 3 == 0)})
               .fillWidth().padding(16, 20).background(Color(0x1C1C1E)).cornerRadius(18);

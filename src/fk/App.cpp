@@ -1,8 +1,10 @@
 #include "App.h"
 #include <cstring>
 #include <unordered_map>
+#include "Input.h"
 #include "Node.h"
 #include "Platform.h"
+#include "Splash.h"
 
 namespace fk {
 namespace {
@@ -29,6 +31,9 @@ struct TouchState {
   Layer* scroller = nullptr;
   uint32_t lastT = 0;
   float vel = 0;
+  bool dismissOnUp = false, repeated = false;
+  input::FieldState* focusAtDown = nullptr;
+  uint32_t nextRepeat = 0;
 };
 
 struct G {
@@ -40,6 +45,10 @@ struct G {
   std::unordered_map<std::string, Layer*> ids;
   Layer* screensRoot = nullptr;
   Layer* popupsRoot = nullptr;
+  Layer* kbRoot = nullptr;
+  Layer* splash = nullptr;
+  Layer* offLayer = nullptr;
+  bool poweringOff = false;
   int cur = -1, openPopup = -1;
   bool popupBusy = false, began = false;
   std::vector<std::pair<int, Transition>> stack;
@@ -109,6 +118,7 @@ void switchTo(int ni, Transition t, bool rev) {
   if (ni == G.cur || ni < 0 || ni >= (int)G.screens.size()) return;
   int oi = G.cur;
   G.cur = ni;
+  input::onScreenChanged();
   Layer* nl = G.screens[ni].layer;
   resetProps(nl);
   nl->visible = true;
@@ -182,6 +192,9 @@ void handleTouch(uint32_t now) {
     T = TouchState{};
     T.down = true; T.sx = x; T.sy = y; T.lastX = x; T.lastY = y; T.lastT = now;
     T.target = G.comp.hitTest(x, y);
+    T.focusAtDown = input::focused();
+    if (G.cfg.dismissKeyboardOnTapOutside && input::keyboardVisible()) T.dismissOnUp = !(T.target && input::isKeyboardOrField(T.target));
+    if (T.target && T.target->repeatMs > 0) T.nextRepeat = now + 450;
     const auto& ord = G.comp.order();
     for (size_t i = ord.size(); i-- > 0;) {
       Layer* l = ord[i];
@@ -198,6 +211,11 @@ void handleTouch(uint32_t now) {
       }
     }
   } else if (t && T.down) {
+    if (T.target && T.target->repeatMs > 0 && !T.scrolling && now >= T.nextRepeat) {  // hold-to-repeat (backspace)
+      T.repeated = true;
+      T.nextRepeat = now + (uint32_t)T.target->repeatMs;
+      if (T.target->onTap) T.target->onTap();
+    }
     if (T.scroller && !T.scrolling && !(T.target && T.target->onTouch) && std::abs(y - T.sy) > 10) {
       T.scrolling = true;
       releaseFeedback(T.target);
@@ -221,8 +239,9 @@ void handleTouch(uint32_t now) {
       if (tg->onTouch) { localPos(tg, T.lastX, T.lastY, lx, ly); tg->onTouch(2, lx, ly); }
       releaseFeedback(tg);
       std::function<void()> tap = tg->onTap;
-      if (tap && tg->rect.contains(T.lastX, T.lastY)) tap();
+      if (!T.repeated && tap && tg->rect.contains(T.lastX, T.lastY)) tap();
     }
+    if (T.dismissOnUp && input::focused() == T.focusAtDown) input::hideKeyboard();  // tapped outside the keyboard
     T.down = false; T.scrolling = false; T.target = nullptr; T.scroller = nullptr;
   }
 }
@@ -264,8 +283,17 @@ void begin(const Config& cfg) {
   G.comp.init(G.W, G.H);
   G.comp.profile = cfg.profile;
   G.screensRoot = container(&G.comp.root, G.W, G.H, true);
+  G.kbRoot = container(&G.comp.root, G.W, G.H, false);
+  input::init(G.kbRoot, G.W, G.H, cfg.keyboardBlur);
   G.popupsRoot = container(&G.comp.root, G.W, G.H, true);
+  if (cfg.bootSplash) G.splash = splash::create(&G.comp.root, G.W, G.H, cfg);
+  {
+    auto o = std::make_unique<Layer>();  // power-off overlay: flat black, costs no memory
+    o->w = G.W; o->h = G.H; o->isSolid = true; o->solid565 = 0; o->opaque = true; o->visible = false; o->opacity = 0.f;
+    G.offLayer = G.comp.root.add(std::move(o));
+  }
   G.began = true;
+  if (G.splash) { Rect d; if (G.comp.prepare(d)) G.comp.render(d); }  // splash is on screen before the slow bake starts
   // touch the built-in family so a broken font shows up immediately
   if (!montserrat(Weight::Regular)->ok()) platform::log("built-in Montserrat failed to load");
 }
@@ -296,13 +324,19 @@ void bake() {
     auto node = s.root.node();
     node->measure(Size{G.W, G.H});
     node->place(Rect{0, 0, G.W, G.H});
+    size_t fieldsBefore = input::fieldCount();
     node->bake(env, s.layer);
-    if (!G.popups.empty()) {
+    bool hasFields = input::fieldCount() > fieldsBefore;
+    if (!G.popups.empty() || hasFields) {
+      bool sv = G.splash && G.splash->visible;
+      if (G.splash) G.splash->visible = false;  // keep the splash out of the screen snapshot
       s.layer->visible = true;
       auto snap = std::make_unique<Surface>(G.W, G.H);
       G.comp.snapshot(*snap);
       s.layer->visible = false;
-      bakeBackdrop(s, *snap);
+      if (G.splash) G.splash->visible = sv;
+      if (!G.popups.empty()) bakeBackdrop(s, *snap);
+      if (hasFields) input::bakeKeyboardBackdrop(s.layer, *snap);  // blurred glass the keyboard sits on
       if (i == 0) firstSnap = std::move(snap);
     }
     if (G.cfg.log) platform::log("baked screen '%s'", s.name.c_str());
@@ -330,12 +364,21 @@ void bake() {
     if (G.cfg.log) platform::log("baked popup '%s'", p.name.c_str());
   }
   firstSnap.reset();
+  input::bakeKeyboard();
 
   G.comp.invalidateAll();
   if (G.cur < 0 && !G.screens.empty()) {
     G.cur = 0;
     G.screens[0].layer->visible = true;
-    applyAppear(G.screens[0].layer);
+    if (G.splash) {  // everything is rendered: fade the splash away, then let the first screen animate in
+      Layer* first = G.screens[0].layer;
+      G.anim.animateValue(0.f, 1.f, Animation::linear(280), nullptr, [first]() { applyAppear(first); });
+    } else applyAppear(G.screens[0].layer);
+  }
+  if (G.splash) {
+    Layer* sp = G.splash;
+    G.splash = nullptr;
+    G.anim.animate(&sp->opacity, 0.f, Animation::bezierInOut(750), [sp]() { splash::release(sp); });
   }
   if (G.cfg.log)
     platform::log("bake done in %u ms, %u KB of pre-rendered surfaces", (unsigned)(platform::millis() - t0), (unsigned)(Surface::totalBytes() / 1024));
@@ -447,6 +490,33 @@ void update() {
   Rect d;
   if (G.comp.prepare(d)) G.comp.render(d);
 }
+
+Layer* currentScreenLayer() { auto& G = g(); return G.cur >= 0 ? G.screens[G.cur].layer : nullptr; }
+
+void powerOff(const Animation& fade, std::function<void()> then) {
+  auto& G = g();
+  if (G.poweringOff || !G.offLayer) return;
+  G.poweringOff = true;
+  Layer* o = G.offLayer;
+  input::hideKeyboard();
+  o->visible = true; o->hit = true; o->opacity = 0.f;  // swallows touches while fading
+  G.anim.animate(&o->opacity, 1.f, fade, [then]() {
+    if (then) then(); else platform::powerOff();
+  });
+}
+void cancelPowerOff(const Animation& fade) {
+  auto& G = g();
+  if (!G.poweringOff || !G.offLayer) return;
+  Layer* o = G.offLayer;
+  G.anim.animate(&o->opacity, 0.f, fade, [o]() { o->visible = false; o->hit = false; g().poweringOff = false; });
+}
+bool poweringOff() { return g().poweringOff; }
+
+std::string fieldText(const std::string& id) { return input::getText(input::findField(id)); }
+void setFieldText(const std::string& id, const std::string& t) { input::setText(input::findField(id), t); }
+void focusField(const std::string& id) { input::focus(input::findField(id)); }
+void hideKeyboard() { input::hideKeyboard(); }
+bool keyboardVisible() { return input::keyboardVisible(); }
 
 // ----------------------------------------------------------------- LayerRef
 LayerRef layer(const std::string& id) {
