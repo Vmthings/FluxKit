@@ -16,6 +16,7 @@ static int g_tx = 0, g_ty = 0;
 void* alloc(size_t n) { return calloc(1, n ? n : 1); }
 void release(void* p) { free(p); }
 uint32_t millis() { return g_time; }
+uint64_t micros() { return (uint64_t)g_time * 1000ULL; }
 void log(const char* fmt, ...) { va_list a; va_start(a, fmt); vprintf(fmt, a); va_end(a); printf("\n"); }
 void init(int) { g_fb.assign((size_t)g_w * g_h, 0); }
 int width() { return g_w; }
@@ -46,6 +47,7 @@ void* alloc(size_t n) {
   return p;
 }
 void release(void* p) { heap_caps_free(p); }
+uint64_t micros() { return (uint64_t)esp_timer_get_time(); }
 uint32_t millis() { return (uint32_t)(esp_timer_get_time() / 1000ULL); }
 void log(const char* fmt, ...) {
   char buf[192];

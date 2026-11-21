@@ -11,9 +11,10 @@ struct Config {
   int rotation = -1;            // -1: keep M5 default
   int blurRadius = 26;          // popup backdrop blur (px, full-res equivalent)
   float scrim = 0.35f;          // popup backdrop darkening 0..1
-  int blurSteps = 3;            // pre-rendered blur levels cross-faded while a popup opens
+  int blurSteps = 2;            // pre-rendered blur levels cross-faded while a popup opens (each costs 1.8 MB per screen)
   int backdropDownscale = 4;    // blur backdrops are stored at 1/N resolution
   bool log = true;
+  bool profile = false;         // log compose/present ms per frame once a second (find your bottleneck)
 };
 
 enum class Transition { None, Fade, Push, Cover };

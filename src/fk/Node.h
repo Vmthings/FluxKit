@@ -56,6 +56,7 @@ class Node : public std::enable_shared_from_this<Node> {
   virtual bool isLayerRoot() const { return forceLayer || tap || !id.empty() || opacity < 1.f || hasAppear; }
   virtual void paintContent(Surface&, int /*ox*/, int /*oy*/, BakeEnv&) {}
   virtual Layer* bake(BakeEnv& env, Layer* parent) { return bakeGeneric(env, parent); }
+  virtual bool allowCompact() const { return true; }  // may be stored as RGB565 when fully opaque
   Font resolvedFont() const;
   Color resolvedFg() const;
   Rect layerBounds() const;

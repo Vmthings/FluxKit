@@ -17,6 +17,17 @@ Surface::~Surface() {
 }
 size_t Surface::totalBytes() { return g_live; }
 
+Surface565::Surface565(int w_, int h_) {
+  if (w_ <= 0 || h_ <= 0) return;
+  data = (uint16_t*)platform::alloc((size_t)w_ * h_ * 2);
+  if (!data) { platform::log("Surface565 alloc failed (%dx%d)", w_, h_); return; }
+  w = w_; h = h_;
+  g_live += (size_t)w * h * 2;
+}
+Surface565::~Surface565() {
+  if (data) { g_live -= (size_t)w * h * 2; platform::release(data); }
+}
+
 bool Surface::isOpaque() const {
   for (size_t i = 0, n = (size_t)w * h; i < n; i++)
     if ((data[i] >> 24) != 255) return false;

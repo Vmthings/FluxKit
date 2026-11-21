@@ -54,12 +54,12 @@ Glyphs are rasterized during `bake()` for exactly the strings you use, so any la
 ## How "all rendered at boot" works
 * Each view that can move/fade/change (anything with `.onTap`, `.id`, `.appear`, `.opacity`, controls, scroll content) becomes a **layer**: a pre-rendered ARGB surface in PSRAM. Static views are flattened into their parent's layer.
 * Animation only changes layer properties (offset, scale, opacity, frame, reveal), never pixels. A toggle slides its pre-rendered knob; a slider moves the knob and crops the pre-rendered fill; a button swaps to its pre-rendered pressed frame; `TextStates` / `Canvas` / `Spinner` flip between pre-rendered frames.
-* Popup blur: at bake each screen is snapshotted and blurred into a ladder (default 3 levels at ¼ resolution). Opening a popup cross-fades the ladder, so the blur appears to grow with no per-frame blur.
-* The compositor tracks dirty rects, culls anything hidden behind an opaque layer, and ordered-dithers to RGB565.
+* Popup blur: at bake each screen is snapshotted, blurred, upscaled and dithered into full-resolution RGB565 levels (default 2). Opening a popup cross-fades them with an integer blend, so the blur appears to grow with no per-frame blur or scaling.
+* The compositor tracks dirty rects, culls anything hidden behind an opaque layer, memcpy's opaque RGB565 layers, and dithers RGBA content to RGB565.
 
 ## Limits / things to know
 * **Dynamic content must be a pre-rendered state.** Use `TextStates({...})`, `Canvas(..., frames)`, or `reveal` for progress. There is no per-frame text re-render by design.
-* **Memory is the trade-off.** Full-screen layers are 3.5 MB each (ARGB8888). The bundled example uses ~17 MB of the 32 MB PSRAM (two screens, a popup, a 24-row scroll list). `fk::memoryUsed()` reports it. Each tappable view stores a second (pressed) frame.
+* **Memory is the trade-off.** Layers with transparency (rounded cards, text) are ARGB8888; fully opaque layers (screen backgrounds, blur backdrops) are stored as dithered RGB565 at 1.8 MB per full screen. The bundled example uses ~19 MB of the 32 MB PSRAM (two screens, a popup, a 24-row scroll list). Each blur level costs 1.8 MB per screen that has popups: lower `Config::blurSteps` (default 2) to save memory. `fk::memoryUsed()` reports it. Each tappable view stores a second (pressed) frame.
 * `.material()` blurs what is painted behind it *in the same layer* (and, for popup content, the first screen). Static glass panels work; glass over a different layer does not.
 * Lifted layers draw above static siblings in the same parent.
 * No text input / keyboard, no PNG/JPG decoding (pass pixels via `Surface::fromRGB565/fromARGB`), no kerning (stb_truetype's `kern` table only), vertical `ScrollView` only.
@@ -67,7 +67,8 @@ Glyphs are rasterized during `bake()` for exactly the strings you use, so any la
 ## Status: read this
 Built and verified **on a host build only** (full pipeline: bake, layout, text, blur, popups, navigation, scroll, touch; output inspected as images). It has **not been run on a Tab5**. Expect to touch up:
 * **Display driver call** in `src/fk/Platform.cpp`: `pushImage(..., rgb565_t*)`. If colors look byte-swapped, build with `-DFK_SWAP565`. If the screen comes up 1280×720, pass `Config{.rotation = N}`; layouts adapt to whatever size M5GFX reports.
-* **Performance numbers are unmeasured.** The compositor is software (no PPA yet). Small/partial animations (toggles, sliders, popups) should be fine; full-screen transitions blend ~0.9 MP per frame on a 400 MHz core, so expect somewhere around 20–30 fps there. The natural next step is moving layer blits to the P4's PPA behind `Compositor::drawLayer`. Measure `bake()` time and a full-screen `Push` transition first.
+* **Finding your bottleneck:** `fk::begin(Config{.profile = true})` prints compose ms, present ms and screen coverage per frame once a second over serial. If `present` dominates, the display transfer (not FluxKit) is the limit; DMA/double-buffering in `Platform.cpp` is the next step.
+* **Performance numbers are unmeasured on hardware.** The compositor is software (no PPA yet). Small/partial animations (toggles, sliders, popups) should be fine; full-screen transitions blend ~0.9 MP per frame on a 400 MHz core, so expect somewhere around 20–30 fps there. The natural next step is moving layer blits to the P4's PPA behind `Compositor::drawLayer`. Measure `bake()` time and a full-screen `Push` transition first.
 * Touch uses `M5.Touch.getDetail(0)`.
 
 ## Layout
@@ -78,5 +79,6 @@ src/fk/Font.*          fonts + import               src/fk/Raster.*  boot-time r
 src/fk/Layer.*         layers + compositor          src/fk/Anim.*    curves, springs, Appear
 src/fk/fonts/          embedded Montserrat + OFL     tools/ttf2h.py   font converter
 test/host_test.cpp     host render test (g++ -DFLUXKIT_HOST)
+test/bench_popup.cpp   host benchmark of popup-open frame cost
 ```
 Licenses: FluxKit code is yours to license; `stb_truetype.h` is public domain/MIT; Montserrat is SIL OFL 1.1 (`src/fk/fonts/OFL.txt`).

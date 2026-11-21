@@ -224,6 +224,24 @@ void blend(Surface& dst, const Surface& src, int dx, int dy, uint32_t op) {
   }
 }
 
+std::shared_ptr<Surface565> toRGB565(const Surface& s) {
+  static const uint8_t kB[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+  auto d = std::make_shared<Surface565>(s.w, s.h);
+  if (!d->data || !s.data) return d;
+  for (int y = 0; y < s.h; y++) {
+    const uint32_t* sp = s.row(y);
+    uint16_t* dp = d->data + (size_t)y * s.w;
+    for (int x = 0; x < s.w; x++) {
+      uint32_t p = sp[x], dm = kB[((y & 3) << 2) | (x & 3)];
+      uint32_t r = std::min<uint32_t>(255, ((p >> 16) & 255) + (dm >> 1));
+      uint32_t g = std::min<uint32_t>(255, ((p >> 8) & 255) + (dm >> 2));
+      uint32_t b = std::min<uint32_t>(255, (p & 255) + (dm >> 1));
+      dp[x] = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+    }
+  }
+  return d;
+}
+
 void tint(Surface& s, Color c) {
   uint32_t p = c.premul();
   for (size_t i = 0, n = (size_t)s.w * s.h; i < n; i++) s.data[i] = over(p, s.data[i]);

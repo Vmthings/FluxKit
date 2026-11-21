@@ -12,7 +12,11 @@ struct Layer {
 
   // pre-rendered pixels (several frames = pre-baked states / animation frames)
   std::vector<SurfacePtr> frames;
+  std::shared_ptr<Surface565> p565;  // alternative to frames[0] for opaque single-frame layers (fast path)
   int frame = 0;
+  bool hasPixels() const { return p565 ? p565->w > 0 : (!frames.empty() && frames[0]->w > 0); }
+  int pixW() const { return p565 ? p565->w : frames[0]->w; }
+  int pixH() const { return p565 ? p565->h : frames[0]->h; }
   float pixelScale = 1.f;  // surface pixels per logical unit (<1 for low-res blur backdrops)
 
   // rest geometry, parent-layer space (logical units)
@@ -73,6 +77,7 @@ class Compositor {
   // Compose the whole screen at the current state into an ARGB surface (used to bake blur backdrops).
   void snapshot(Surface& out);
   Layer* hitTest(int x, int y);
+  bool profile = false;  // log average frame cost once a second
   const std::vector<Layer*>& order() const { return order_; }
   void bringToFront(Layer* l);
   void invalidateAll() { forceFull_ = true; }  // redraw the whole screen on the next prepare()
@@ -81,11 +86,14 @@ class Compositor {
   int w_ = 0, h_ = 0;
   std::vector<Layer*> order_;
   uint16_t* tile_ = nullptr;
+  uint64_t profT0_ = 0, profCompose_ = 0, profPresent_ = 0, profPixels_ = 0;
+  int profFrames_ = 0;
   struct World { float ws, wx, wy, wo; bool wvis; Rect wclip; };
   bool forceFull_ = false;
   void walk(Layer* l, const World& parent);
   void composeTo(Rect d, uint16_t* tile);
   void drawLayer(Layer* l, const Rect& d, uint16_t* tile);
+  void draw565(Layer* l, const Rect& d, uint16_t* tile);
 };
 
 }  // namespace fk

@@ -87,10 +87,12 @@ void bakeBackdrop(ScreenRec& s, Surface& snap) {
     if (lvl->data) memcpy(lvl->data, small->data, small->bytes());
     raster::boxBlur(*lvl, std::max(1, (int)std::lround(G.cfg.blurRadius / (float)f * k / N)), 3);
     raster::tint(*lvl, Color(0x000000, (uint8_t)std::lround(std::clamp(G.cfg.scrim, 0.f, 1.f) * 255 * k / N)));
+    // Upscale ONCE here (boot), store as dithered RGB565: at runtime a level is a memcpy / integer blend.
+    auto big = raster::resize(*lvl, G.W, G.H);
     auto L = std::make_unique<Layer>();
-    L->w = G.W; L->h = G.H; L->pixelScale = 1.f / f;
-    L->opaque = lvl->isOpaque();
-    L->frames.push_back(lvl);
+    L->w = G.W; L->h = G.H;
+    L->opaque = true;
+    L->p565 = raster::toRGB565(*big);
     L->opacity = 0.f;
     s.levels.push_back(s.backdrop->add(std::move(L)));
   }
@@ -258,6 +260,7 @@ void begin(const Config& cfg) {
   platform::init(cfg.rotation);
   G.W = platform::width(); G.H = platform::height();
   G.comp.init(G.W, G.H);
+  G.comp.profile = cfg.profile;
   G.screensRoot = container(&G.comp.root, G.W, G.H, true);
   G.popupsRoot = container(&G.comp.root, G.W, G.H, true);
   G.began = true;

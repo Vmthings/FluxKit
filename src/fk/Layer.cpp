@@ -32,13 +32,13 @@ void Compositor::walk(Layer* l, const World& p) {
   l->rect = rectOf(l->wx, l->wy, l->w * l->ws, l->h * l->ws).intersect(l->wclip);
   l->bounds = Rect{};
   l->cover = Rect{};
-  if (l->wvis && l->wo > 0.002f && !l->frames.empty() && l->frames[0]->w > 0) {
+  if (l->wvis && l->wo > 0.002f && l->hasPixels()) {
     float rw = l->w * l->ws * l->reveal, rh = l->h * l->ws;
     bool simple = std::fabs(l->ws - 1.f) < 1e-4f && l->pixelScale == 1.f;
     if (simple) {
       int ox = (int)std::lround(l->wx), oy = (int)std::lround(l->wy);
-      int rw_i = (int)std::lround(l->frames[0]->w * l->reveal);
-      Rect r{ox, oy, rw_i, l->frames[0]->h};
+      int rw_i = (int)std::lround(l->pixW() * l->reveal);
+      Rect r{ox, oy, rw_i, l->pixH()};
       l->bounds = r.intersect(l->wclip);
       l->cover = l->bounds;
     } else {
@@ -118,7 +118,52 @@ static inline uint32_t lerpPx(uint32_t a, uint32_t b, uint32_t f) {
   return rb | ag;
 }
 
+// d + (s-d)*a/32 on packed RGB565 (Bodmer's SWAR blend)
+static inline uint16_t mix565(uint16_t d, uint16_t s, uint32_t a) {
+  uint32_t D = (d | ((uint32_t)d << 16)) & 0x07E0F81Fu, S = (s | ((uint32_t)s << 16)) & 0x07E0F81Fu;
+  uint32_t R = ((((S - D) * a) >> 5) + D) & 0x07E0F81Fu;
+  return (uint16_t)(R | (R >> 16));
+}
+
+void Compositor::draw565(Layer* l, const Rect& d, uint16_t* tile) {
+  Rect r = l->bounds.intersect(d);
+  if (r.empty()) return;
+  const Surface565& S = *l->p565;
+  const uint32_t op = (uint32_t)std::lround(std::clamp(l->wo, 0.f, 1.f) * 255.f);
+  const uint32_t a = (op * 32 + 127) / 255;
+  if (std::fabs(l->ws - 1.f) < 1e-4f && l->pixelScale == 1.f) {
+    int ox = (int)std::lround(l->wx), oy = (int)std::lround(l->wy);
+    int lim = (int)std::lround(S.w * l->reveal);
+    int x0 = std::max(r.x, ox), x1 = std::min(r.right(), ox + lim);
+    if (x1 <= x0) return;
+    int n = x1 - x0;
+    for (int y = r.y; y < r.bottom(); y++) {
+      int sy = y - oy;
+      if (sy < 0 || sy >= S.h) continue;
+      const uint16_t* sp = S.data + (size_t)sy * S.w + (x0 - ox);
+      uint16_t* dp = tile + (size_t)(y - d.y) * d.w + (x0 - d.x);
+      if (op >= 255) memcpy(dp, sp, (size_t)n * 2);
+      else for (int i = 0; i < n; i++) dp[i] = mix565(dp[i], sp[i], a);
+    }
+    return;
+  }
+  // scaled opaque layer (rare): nearest neighbour
+  float inv = 1.f / l->ws;
+  for (int y = r.y; y < r.bottom(); y++) {
+    int sy = (int)((y + 0.5f - l->wy) * inv);
+    if (sy < 0 || sy >= S.h) continue;
+    uint16_t* dp = tile + (size_t)(y - d.y) * d.w - d.x;
+    for (int x = r.x; x < r.right(); x++) {
+      int sx = (int)((x + 0.5f - l->wx) * inv);
+      if (sx < 0 || sx >= (int)(S.w * l->reveal)) continue;
+      uint16_t s = S.data[(size_t)sy * S.w + sx];
+      dp[x] = op >= 255 ? s : mix565(dp[x], s, a);
+    }
+  }
+}
+
 void Compositor::drawLayer(Layer* l, const Rect& d, uint16_t* tile) {
+  if (l->p565) { draw565(l, d, tile); return; }
   Rect r = l->bounds.intersect(d);
   if (r.empty()) return;
   const Surface& S = *l->frames[std::clamp(l->frame, 0, (int)l->frames.size() - 1)];
@@ -197,8 +242,21 @@ void Compositor::composeTo(Rect d, uint16_t* tile) {
 void Compositor::render(Rect d) {
   d = d.intersect(Rect{0, 0, w_, h_});
   if (d.empty() || !tile_) return;
+  uint64_t t0 = profile ? platform::micros() : 0;
   composeTo(d, tile_);
+  uint64_t t1 = profile ? platform::micros() : 0;
   platform::present(d.x, d.y, d.w, d.h, tile_);
+  if (profile) {
+    uint64_t t2 = platform::micros();
+    if (!profT0_) profT0_ = t0;
+    profCompose_ += t1 - t0; profPresent_ += t2 - t1; profPixels_ += (uint64_t)d.w * d.h; profFrames_++;
+    if (t2 - profT0_ >= 1000000ULL) {
+      platform::log("profile: %d frames/s, compose %.1f ms, present %.1f ms, %.0f%% of screen per frame",
+                    profFrames_, profCompose_ / 1000.0 / profFrames_, profPresent_ / 1000.0 / profFrames_,
+                    100.0 * profPixels_ / profFrames_ / ((double)w_ * h_));
+      profT0_ = t2; profCompose_ = profPresent_ = profPixels_ = 0; profFrames_ = 0;
+    }
+  }
 }
 
 void Compositor::snapshot(Surface& out) {

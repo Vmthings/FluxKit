@@ -7,6 +7,17 @@ namespace fk {
 class Surface;
 using SurfacePtr = std::shared_ptr<Surface>;
 
+// Opaque RGB565 pixels (half the memory of Surface, and the compositor can memcpy / SWAR-blend them).
+class Surface565 {
+ public:
+  Surface565(int w, int h);
+  ~Surface565();
+  Surface565(const Surface565&) = delete;
+  Surface565& operator=(const Surface565&) = delete;
+  int w = 0, h = 0;
+  uint16_t* data = nullptr;
+};
+
 class Surface {
  public:
   Surface(int w, int h);

@@ -41,6 +41,7 @@ SurfacePtr crop(const Surface& s, Rect r, bool clampEdges);
 SurfacePtr downscale(const Surface& s, int factor);
 SurfacePtr resize(const Surface& s, int nw, int nh);   // bilinear
 void blend(Surface& dst, const Surface& src, int dx, int dy, uint32_t opacity255 = 255);
+std::shared_ptr<Surface565> toRGB565(const Surface& s);  // opaque surface -> dithered RGB565 (dither is baked in)
 void tint(Surface& s, Color c);                         // overlay color on every pixel
 void dim(Surface& s, float k);                          // multiply RGB (keeps alpha)
 void maskRoundRect(Surface& s, float x, float y, float w, float h, float r);

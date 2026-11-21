@@ -10,6 +10,7 @@ namespace platform {
 void* alloc(size_t bytes);  // zero-filled; PSRAM preferred on ESP32
 void release(void* p);
 uint32_t millis();
+uint64_t micros();
 void log(const char* fmt, ...);
 
 void init(int rotation);  // rotation < 0 keeps the current one

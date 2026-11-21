@@ -86,6 +86,10 @@ Layer* Node::bakeGeneric(BakeEnv& env, Layer* parent) {
   Layer* L = makeLayer(env, parent, b);
   L->frames.push_back(surf);
   L->opaque = surf->isOpaque();
+  if (L->opaque && !tap && allowCompact()) {  // opaque static layer: half the memory, memcpy-fast compositing
+    L->p565 = raster::toRGB565(*surf);
+    L->frames.clear();
+  }
   if (tap) {
     if (surf->data) {
       auto dark = std::make_shared<Surface>(b.w, b.h);
@@ -107,8 +111,8 @@ Layer* Node::bakeBox(BakeEnv& env, Layer* parent) {
   if (hasBg || hasBorder || hasMat || hasShadow) {
     auto surf = std::make_shared<Surface>(b.w, b.h);
     paintSelf(*surf, b.x, b.y, env);
-    L->frames.push_back(surf);
     L->opaque = surf->isOpaque();
+    if (L->opaque) L->p565 = raster::toRGB565(*surf); else L->frames.push_back(surf);
   }
   L->w = b.w; L->h = b.h;
   return L;
@@ -225,6 +229,7 @@ class TextNode : public Node {
     return Size{w, h};
   }
   bool isLayerRoot() const override { return Node::isLayerRoot() || variants.size() > 1; }
+  bool allowCompact() const override { return variants.size() <= 1; }
   void paintContent(Surface& s, int ox, int oy, BakeEnv&) override {
     Font f = resolvedFont();
     Color c = resolvedFg();
