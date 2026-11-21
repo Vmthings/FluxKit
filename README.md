@@ -82,13 +82,14 @@ Like everything else it is pre-rendered: each glyph the field can show is render
 * `.material()` blurs what is painted behind it *in the same layer* (and, for popup content, the first screen). Static glass panels work; glass over a different layer does not.
 * Lifted layers draw above static siblings in the same parent.
 * No PNG/JPG decoding (pass pixels via `Surface::fromRGB565/fromARGB`), no kerning (stb_truetype's `kern` table only), vertical `ScrollView` only.
+* You may experience several crashes on the system if you have too much elements. We are working hard to fix this.
 
 ## Status: read this
-Built and verified **on a host build only** (full pipeline: bake, layout, text, blur, popups, navigation, scroll, touch; output inspected as images). It has **not been run on a Tab5**. Expect to touch up:
 * **Display driver call** in `src/fk/Platform.cpp`: `pushImage(..., rgb565_t*)`. If colors look byte-swapped, build with `-DFK_SWAP565`. If the screen comes up 1280×720, pass `Config{.rotation = N}`; layouts adapt to whatever size M5GFX reports.
 * **Finding your bottleneck:** `fk::begin(Config{.profile = true})` prints compose ms, present ms and screen coverage per frame once a second over serial. If `present` dominates, the display transfer (not FluxKit) is the limit; DMA/double-buffering in `Platform.cpp` is the next step.
 * **Performance numbers are unmeasured on hardware.** The compositor is software (no PPA yet). Small/partial animations (toggles, sliders, popups) should be fine; full-screen transitions blend ~0.9 MP per frame on a 400 MHz core, so expect somewhere around 20–30 fps there. The natural next step is moving layer blits to the P4's PPA behind `Compositor::drawLayer`. Measure `bake()` time and a full-screen `Push` transition first.
 * Touch uses `M5.Touch.getDetail(0)`.
+* Built for **high-performance chips only.** You must have at least 32 MB of PSRAM (or other types, like DDR RAM), and a 360 MHz processor (like the ESP32-P4 or you can also use a RPi Zero 2W.)
 
 ## Layout
 ```
