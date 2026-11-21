@@ -30,12 +30,15 @@ void setup() {
             .appear(Appear::slideUp(60).delay(80)),
         Spacer(),
         VStack({
-          HStack({Text("Wi-Fi").font(Font::semibold(22)), Spacer(), Toggle(true, [](bool on) { Serial.println(on); })}).fillWidth(),
+          HStack({Text("Wi-Fi").font(Font::semibold(22)), Spacer(),
+                  Toggle(false, [](bool on) { Serial.println(on); layer("connect").enabled(on); })}).fillWidth(),
           Divider(),
           HStack({Text("Volume"), Spacer(), TextStates({"0%", "50%", "100%"}).id("vol")}).fillWidth(),
           Slider(0, 100, 50, [](float v) { layer("vol").frame(v < 33 ? 0 : v < 66 ? 1 : 2); }),
         }).spacing(18).padding(28).fillWidth().cornerRadius(28)
           .material(30, Color(0xFFFFFF, 30)).border(Color(0xFFFFFF, 50)).shadow(24, 12),
+        // Greyed out until Wi-Fi is on. Tapping it while disabled: fades red, wiggles, fades back to grey.
+        Button("Connect", [] { Serial.println("connecting"); }).disabled().id("connect").fillWidth(),
         Button("Settings", [] { push("settings"); }).fillWidth(),
         Button("About", [] { present("about"); }).background(Color(0xFFFFFF, 30)).fillWidth(),
       }).spacing(20).padding(48, 36),

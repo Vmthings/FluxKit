@@ -52,6 +52,7 @@ class LayerRef {
   LayerRef& frame(int index);        // switch pre-rendered state (TextStates, Canvas frames)
   LayerRef& play(float fps);         // loop a pre-rendered frame sequence (0 = stop)
   LayerRef& visible(bool v);
+  LayerRef& enabled(bool on);        // views marked .disabled(): switch enabled/disabled look
  private:
   Layer* l_;
 };

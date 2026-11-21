@@ -33,6 +33,7 @@ class Node : public std::enable_shared_from_this<Node> {
   std::function<void()> tap;
   std::string id;
   bool forceLayer = false;
+  bool canDisable = false, startDisabled = false;  // .disabled(): pre-render enabled + disabled + error looks
   bool hasAppear = false; Appear appear;
   enum class Shape { None, Rect, Circle, Capsule } shape = Shape::None;
 
@@ -53,7 +54,7 @@ class Node : public std::enable_shared_from_this<Node> {
   virtual int stackAxis() const { return -1; }  // 0 = horizontal, 1 = vertical
 
   // painting / baking
-  virtual bool isLayerRoot() const { return forceLayer || tap || !id.empty() || opacity < 1.f || hasAppear; }
+  virtual bool isLayerRoot() const { return forceLayer || tap || canDisable || !id.empty() || opacity < 1.f || hasAppear; }
   virtual void paintContent(Surface&, int /*ox*/, int /*oy*/, BakeEnv&) {}
   virtual Layer* bake(BakeEnv& env, Layer* parent) { return bakeGeneric(env, parent); }
   virtual bool allowCompact() const { return true; }  // may be stored as RGB565 when fully opaque
@@ -66,7 +67,8 @@ class Node : public std::enable_shared_from_this<Node> {
   void paintSelf(Surface& s, int ox, int oy, BakeEnv& env);
   void paintTree(Surface& s, int ox, int oy, BakeEnv& env, std::vector<Node*>& deferred);
   Layer* bakeGeneric(BakeEnv& env, Layer* parent);
-  Layer* bakeBox(BakeEnv& env, Layer* parent);  // own box only (no children), for containers
+  Layer* bakeBox(BakeEnv& env, Layer* parent);
+  Layer* bakeDisableable(BakeEnv& env, Layer* parent);  // own box only (no children), for containers
   Layer* makeLayer(BakeEnv& env, Layer* parent, Rect bounds, const char* name = "");
   void finishLayer(BakeEnv& env, Layer* l);
   friend class TextNode;

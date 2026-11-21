@@ -78,7 +78,10 @@ Layer* Node::makeLayer(BakeEnv& env, Layer* parent, Rect b, const char*) {
   return raw;
 }
 
+static std::unique_ptr<Layer> newSubLayer(Layer* parent, SurfacePtr s, int lx, int ly, int lw, int lh);
+
 Layer* Node::bakeGeneric(BakeEnv& env, Layer* parent) {
+  if (canDisable) return bakeDisableable(env, parent);
   Rect b = layerBounds();
   auto surf = std::make_shared<Surface>(b.w, b.h);
   std::vector<Node*> deferred;
@@ -101,6 +104,65 @@ Layer* Node::bakeGeneric(BakeEnv& env, Layer* parent) {
     L->hit = true;
     L->onTap = tap;
   }
+  for (Node* d : deferred) d->bake(env, L);
+  return L;
+}
+
+// Pre-renders three looks of the same view: normal (+pressed), disabled (grey), error (red).
+// Tapping while disabled: red overlay fades in, the whole view wiggles (damped sine), red fades back out.
+Layer* Node::bakeDisableable(BakeEnv& env, Layer* parent) {
+  Rect b = layerBounds();
+  std::vector<Node*> deferred;
+  auto look = [&](int which) {
+    auto surf = std::make_shared<Surface>(b.w, b.h);
+    bool hb = hasBg, hf = hasFg; Paint pb = bg; Color pf = fg;
+    if (which == 1) { hasBg = true; bg = Paint(Color(0x3A3A3C)); hasFg = true; fg = Color(0x8E8E93); }
+    if (which == 2) { hasBg = true; bg = Paint(Color(0xFF453A)); hasFg = true; fg = Color::White; }
+    std::vector<Node*> d;
+    paintTree(*surf, b.x, b.y, env, d);
+    if (which == 0) deferred = d;
+    hasBg = hb; hasFg = hf; bg = pb; fg = pf;
+    return surf;
+  };
+  auto normal = look(0), grey = look(1), red = look(2);
+  auto pressed = std::make_shared<Surface>(b.w, b.h);
+  if (normal->data && pressed->data) { memcpy(pressed->data, normal->data, normal->bytes()); raster::dim(*pressed, 0.82f); }
+
+  Layer* L = makeLayer(env, parent, b);  // container: takes the touches, carries the wiggle
+  L->hit = true;
+  Layer* nL = L->add(newSubLayer(L, normal, 0, 0, b.w, b.h));
+  nL->frames.push_back(pressed);
+  Layer* gL = L->add(newSubLayer(L, grey, 0, 0, b.w, b.h));
+  Layer* rL = L->add(newSubLayer(L, red, 0, 0, b.w, b.h));
+  rL->opacity = 0.f;
+
+  struct State { bool enabled; bool busy = false; };
+  auto st = std::make_shared<State>(); st->enabled = !startDisabled;
+  nL->opacity = st->enabled ? 1.f : 0.f;
+  gL->opacity = st->enabled ? 0.f : 1.f;
+  auto action = tap;
+
+  L->onPress = [=](bool down) {
+    if (!st->enabled) return;
+    nL->frame = down ? 1 : 0;
+    animator().animate(&L->scale, down ? 0.97f : 1.f, down ? Animation::easeOut(90) : Animation::spring(300, 0.3f));
+  };
+  L->setEnabled = [=](bool e) {
+    st->enabled = e;
+    nL->frame = 0;
+    animator().animate(&nL->opacity, e ? 1.f : 0.f, Animation::easeOut(180));
+    animator().animate(&gL->opacity, e ? 0.f : 1.f, Animation::easeOut(180));
+  };
+  L->onTap = [=]() {
+    if (st->enabled) { if (action) action(); return; }
+    if (st->busy) return;
+    st->busy = true;
+    animator().animateValue(0.f, 1.f, Animation::linear(700), [=](float t) {
+      L->tx = 12.f * std::exp(-3.4f * t) * std::sin(t * 6.2831853f * 3.5f);  // wiggle
+      float r = t < 0.15f ? t / 0.15f : t < 0.45f ? 1.f : 1.f - (t - 0.45f) / 0.55f;  // fade in, hold, fade out
+      rL->opacity = r * r * (3.f - 2.f * r);
+    }, [=]() { L->tx = 0.f; rL->opacity = 0.f; st->busy = false; });
+  };
   for (Node* d : deferred) d->bake(env, L);
   return L;
 }
@@ -476,6 +538,11 @@ View View::foreground(Color c) const { N->hasFg = true; N->fg = c; return *this;
 View View::multilineAlign(Align a) const { N->textAlign = a; return *this; }
 View View::lineLimit(int n) const { N->lineLimit = n; return *this; }
 View View::onTap(std::function<void()> fn) const { N->tap = std::move(fn); return *this; }
+View View::disabled(bool d) const {
+  N->canDisable = true; N->startDisabled = d;
+  if (!N->tap) N->tap = [] {};
+  return *this;
+}
 View View::id(const std::string& s) const { N->id = s; return *this; }
 View View::appear(Appear a) const { N->hasAppear = true; N->appear = a; return *this; }
 View View::layer() const { N->forceLayer = true; return *this; }

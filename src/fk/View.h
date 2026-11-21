@@ -65,6 +65,9 @@ class View {
   View lineLimit(int n) const;
 
   // ---- behaviour
+  // Disabled look: greyed out. Tapping it fades to red, wiggles, then fades back to grey. All three looks
+  // are pre-rendered at bake. Flip at runtime with fk::layer("id").enabled(true/false) (give it an .id()).
+  View disabled(bool isDisabled = true) const;
   View onTap(std::function<void()> fn) const;  // lifts the view into an interactive layer
   View id(const std::string& name) const;      // lets you find it later: fk::layer("name")
   View appear(Appear a) const;                 // entrance animation when its screen is shown

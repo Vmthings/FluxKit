@@ -156,6 +156,7 @@ void switchTo(int ni, Transition t, bool rev) {
 }
 
 void releaseFeedback(Layer* l) {
+  if (l && l->onPress) { l->onPress(false); return; }
   if (l && l->pressFeedback) {
     l->frame = 0;
     g().anim.animate(&l->scale, 1.f, Animation::spring(300, 0.3f));
@@ -190,7 +191,8 @@ void handleTouch(uint32_t now) {
     if (T.scroller) T.scroller->scrollVel = 0;
     if (T.target) {
       if (T.target->onTouch) { localPos(T.target, x, y, lx, ly); T.target->onTouch(0, lx, ly); }
-      if (T.target->pressFeedback) {
+      if (T.target->onPress) T.target->onPress(true);
+      else if (T.target->pressFeedback) {
         if (T.target->frames.size() > 1) T.target->frame = 1;
         G.anim.animate(&T.target->scale, 0.97f, Animation::easeOut(90));
       }
@@ -461,6 +463,7 @@ LayerRef& LayerRef::opacity(float o, const Animation& a) { if (l_) animator().an
 LayerRef& LayerRef::reveal(float f, const Animation& a) { if (l_) animator().animate(&l_->reveal, std::clamp(f, 0.f, 1.f), a); return *this; }
 LayerRef& LayerRef::frame(int i) { if (l_ && !l_->frames.empty()) l_->frame = std::clamp(i, 0, (int)l_->frames.size() - 1); return *this; }
 LayerRef& LayerRef::play(float fps) { if (l_) { l_->fps = fps; l_->playStart = platform::millis(); } return *this; }
+LayerRef& LayerRef::enabled(bool on) { if (l_ && l_->setEnabled) l_->setEnabled(on); return *this; }
 LayerRef& LayerRef::visible(bool v) { if (l_) l_->visible = v; return *this; }
 
 }  // namespace fk

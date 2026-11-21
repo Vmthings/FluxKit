@@ -28,7 +28,7 @@ void loop() { fk::update(); }
 |---|---|
 | Layout | `VStack` `HStack` `ZStack` `Spacer` `ScrollView` `ForEach`; `.padding .margin .frame .fillWidth .spacing .align` |
 | Content | `Text` `TextStates` `Image` `Canvas` `Spinner` `Rectangle` `RoundedRectangle` `Circle` `Capsule` `Divider` |
-| Controls | `Button` `Toggle` `Slider` `ProgressBar` (+ any view with `.onTap`) |
+| Controls | `Button` `Toggle` `Slider` `ProgressBar` (+ any view with `.onTap`); `.disabled()` greys a button out, and tapping it fades it red, wiggles it, then fades back to grey (`layer("id").enabled(true)` re-enables it) |
 | Look | `.background` (solid/`LinearGradient`) `.cornerRadius .border .shadow .material` (frosted glass) `.opacity` |
 | Motion | `.appear(Appear::slideUp())` (staggerable), screen transitions (`Fade/Push/Cover`), popup spring animations, `layer("id").offset/scale/opacity/reveal/frame/play` |
 | Navigation | `screen() show() push() pop()`; popups: `popup() present() dismiss()` (`Alert`, `Sheet`, `Fullscreen`) |
@@ -53,7 +53,7 @@ Glyphs are rasterized during `bake()` for exactly the strings you use, so any la
 
 ## How "all rendered at boot" works
 * Each view that can move/fade/change (anything with `.onTap`, `.id`, `.appear`, `.opacity`, controls, scroll content) becomes a **layer**: a pre-rendered ARGB surface in PSRAM. Static views are flattened into their parent's layer.
-* Animation only changes layer properties (offset, scale, opacity, frame, reveal), never pixels. A toggle slides its pre-rendered knob; a slider moves the knob and crops the pre-rendered fill; a button swaps to its pre-rendered pressed frame; `TextStates` / `Canvas` / `Spinner` flip between pre-rendered frames.
+* Animation only changes layer properties (offset, scale, opacity, frame, reveal), never pixels. A toggle slides its pre-rendered knob; a slider moves the knob and crops the pre-rendered fill; a button swaps to its pre-rendered pressed frame; a `.disabled()` button has three pre-rendered looks (normal, grey, red) and the error animation is a fade plus a damped wiggle of those layers; `TextStates` / `Canvas` / `Spinner` flip between pre-rendered frames.
 * Popup blur: at bake each screen is snapshotted, blurred, upscaled and dithered into full-resolution RGB565 levels (default 2). Opening a popup cross-fades them with an integer blend, so the blur appears to grow with no per-frame blur or scaling.
 * The compositor tracks dirty rects, culls anything hidden behind an opaque layer, memcpy's opaque RGB565 layers, and dithers RGBA content to RGB565.
 
@@ -80,5 +80,6 @@ src/fk/Layer.*         layers + compositor          src/fk/Anim.*    curves, spr
 src/fk/fonts/          embedded Montserrat + OFL     tools/ttf2h.py   font converter
 test/host_test.cpp     host render test (g++ -DFLUXKIT_HOST)
 test/bench_popup.cpp   host benchmark of popup-open frame cost
+test/disabled_test.cpp host test of disabled-button behaviour
 ```
 Licenses: FluxKit code is yours to license; `stb_truetype.h` is public domain/MIT; Montserrat is SIL OFL 1.1 (`src/fk/fonts/OFL.txt`).

@@ -33,6 +33,8 @@ struct Layer {
   // interaction
   bool hit = false;  // takes touches (absorbs them even without a handler)
   bool pressFeedback = false;
+  std::function<void(bool down)> onPress;     // custom press visuals (replaces pressFeedback)
+  std::function<void(bool enabled)> setEnabled;  // set on views marked .disabled()
   std::function<void()> onTap;
   std::function<void(int phase, float lx, float ly)> onTouch;  // 0 down, 1 move, 2 up (layer-local coords)
   bool scrollable = false;
