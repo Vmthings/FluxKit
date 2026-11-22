@@ -2,3 +2,5 @@ test/host_test
 *.ppm
 .pio/
 .vscode/
+build/
+*.bin

@@ -1,9 +1,11 @@
 #include "App.h"
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include "Input.h"
 #include "Node.h"
 #include "Platform.h"
+#include "Ppa.h"
 #include "Splash.h"
 
 namespace fk {
@@ -46,6 +48,10 @@ struct G {
   Layer* screensRoot = nullptr;
   Layer* popupsRoot = nullptr;
   Layer* kbRoot = nullptr;
+  Layer* dynRoot = nullptr;  // elements created at runtime with fk::spawn()
+  std::unordered_map<std::string, Node*> nodes;
+  std::vector<std::unique_ptr<Layer>> graveyard;  // removed layers live until the next frame (stale pointers stay valid)
+  std::unordered_map<Layer*, View> spawned;
   Layer* splash = nullptr;
   Layer* offLayer = nullptr;
   bool poweringOff = false;
@@ -104,6 +110,139 @@ void bakeBackdrop(ScreenRec& s, Surface& snap) {
     L->p565 = raster::toRGB565(*big);
     L->opacity = 0.f;
     s.levels.push_back(s.backdrop->add(std::move(L)));
+  }
+}
+
+BakeEnv makeEnv(const Surface* backdrop = nullptr) {
+  auto& G = g();
+  BakeEnv e;
+  e.comp = &G.comp; e.ids = &G.ids; e.nodes = &G.nodes; e.backdrop = backdrop;
+  return e;
+}
+
+void collectLayers(Layer* l, std::vector<Layer*>& out) {
+  out.push_back(l);
+  for (auto& k : l->kids) collectLayers(k.get(), out);
+}
+
+// Remove a layer subtree without leaving a single dangling pointer behind: running tweens, touch state,
+// id lookups and the compositor's dirty tracking are all told first; the memory is freed next frame.
+void detachLayer(Layer* l) {
+  auto& G = g();
+  Layer* p = l->parent;
+  if (!p) return;
+  std::vector<Layer*> all;
+  collectLayers(l, all);
+  std::unordered_set<Layer*> set(all.begin(), all.end());
+  Rect dirty;
+  for (Layer* x : all) {
+    dirty = dirty.unite(x->last.bounds);
+    G.anim.cancelRange(x, x + 1);
+    G.anim.cancelOwner(x);
+  }
+  G.comp.addDirty(dirty);
+  if (G.ts.target && set.count(G.ts.target)) G.ts.target = nullptr;
+  if (G.ts.scroller && set.count(G.ts.scroller)) G.ts.scroller = nullptr;
+  for (auto it = G.ids.begin(); it != G.ids.end();) {
+    if (set.count(it->second)) { G.nodes.erase(it->first); it = G.ids.erase(it); } else ++it;
+  }
+  G.spawned.erase(l);
+  for (size_t i = 0; i < p->kids.size(); i++)
+    if (p->kids[i].get() == l) { G.graveyard.push_back(std::move(p->kids[i])); p->kids.erase(p->kids.begin() + (long)i); break; }
+}
+
+// The screen exactly as the user sees it at rest (no popup, keyboard, splash, or transition offset).
+std::unique_ptr<Surface> snapshotOf(Layer* screenLayer) {
+  auto& G = g();
+  struct Saved { Layer* l; bool vis; };
+  std::vector<Saved> saved;
+  auto hide = [&](Layer* l) { if (l) { saved.push_back({l, l->visible}); l->visible = false; } };
+  for (auto& r : G.screens) if (r.layer && r.layer != screenLayer) hide(r.layer);
+  hide(G.kbRoot); hide(G.popupsRoot); hide(G.dynRoot); hide(G.splash); hide(G.offLayer);
+  float tx = screenLayer->tx, ty = screenLayer->ty, sc = screenLayer->scale, op = screenLayer->opacity;
+  bool vis = screenLayer->visible;
+  screenLayer->tx = screenLayer->ty = 0; screenLayer->scale = 1.f; screenLayer->opacity = 1.f; screenLayer->visible = true;
+  auto snap = std::make_unique<Surface>(G.W, G.H);
+  G.comp.snapshot(*snap);
+  screenLayer->tx = tx; screenLayer->ty = ty; screenLayer->scale = sc; screenLayer->opacity = op; screenLayer->visible = vis;
+  for (auto& sv : saved) sv.l->visible = sv.vis;
+  return snap;
+}
+
+void bakeScreen(int i, std::unique_ptr<Surface>* keepSnapshot = nullptr) {
+  auto& G = g();
+  ScreenRec& s = G.screens[i];
+  if (!s.layer) {
+    s.layer = container(G.screensRoot, G.W, G.H, false);
+    s.layer->name = "screen:" + s.name;
+  }
+  auto node = s.root.node();
+  node->measure(Size{G.W, G.H});
+  node->place(Rect{0, 0, G.W, G.H});
+  BakeEnv env = makeEnv();
+  size_t before = input::fieldBakeCount();
+  node->bake(env, s.layer);
+  bool hasFields = input::fieldBakeCount() > before;
+  if (!G.popups.empty() || hasFields) {
+    auto snap = snapshotOf(s.layer);
+    if (!G.popups.empty()) bakeBackdrop(s, *snap);
+    if (hasFields) input::bakeKeyboardBackdrop(s.layer, *snap);  // blurred glass the keyboard sits on
+    if (keepSnapshot) *keepSnapshot = std::move(snap);
+  }
+}
+
+void bakePopup(int i, const Surface* backdrop) {
+  auto& G = g();
+  PopupRec& p = G.popups[i];
+  if (!p.layer) p.layer = container(G.popupsRoot, G.W, G.H, false);
+  auto catcher = std::make_unique<Layer>();
+  catcher->w = G.W; catcher->h = G.H; catcher->hit = true;
+  if (p.tapOut) catcher->onTap = []() { dismiss(); };
+  p.layer->add(std::move(catcher));
+  auto node = p.content.node();
+  Size avail = p.style == PopupStyle::Alert ? Size{G.W - 80, G.H - 160} : Size{G.W, G.H};
+  Size sz = node->measure(avail);
+  Rect r;
+  switch (p.style) {
+    case PopupStyle::Alert: r = Rect{(G.W - sz.w) / 2, (G.H - sz.h) / 2, sz.w, sz.h}; break;
+    case PopupStyle::Sheet: r = Rect{0, G.H - sz.h, G.W, sz.h}; break;
+    case PopupStyle::Fullscreen: r = Rect{0, 0, G.W, G.H}; break;
+  }
+  node->place(r);
+  BakeEnv env = makeEnv(backdrop);
+  p.contentLayer = node->bake(env, p.layer);
+  p.contentLayer->hit = true;  // absorbs touches so the "tap outside" catcher doesn't fire
+}
+
+void rebakeScreen(int i) {
+  auto& G = g();
+  ScreenRec& s = G.screens[i];
+  if (!s.layer) return;
+  input::hideKeyboard();  // its field layers are about to be replaced
+  while (!s.layer->kids.empty()) detachLayer(s.layer->kids.back().get());
+  s.levels.clear(); s.backdrop = nullptr;
+  bakeScreen(i);
+  G.comp.invalidateAll();
+}
+
+void rebakePopup(int i) {
+  auto& G = g();
+  PopupRec& p = G.popups[i];
+  if (!p.layer) return;
+  while (!p.layer->kids.empty()) detachLayer(p.layer->kids.back().get());
+  bakePopup(i, nullptr);  // (frosted-glass material inside popups samples nothing after a runtime re-bake)
+  G.comp.invalidateAll();
+}
+
+void relayoutContaining(Layer* l) {
+  auto& G = g();
+  for (Layer* p = l; p && p->parent; p = p->parent) {
+    if (p->parent == G.screensRoot) {
+      for (size_t i = 0; i < G.screens.size(); i++) if (G.screens[i].layer == p) { rebakeScreen((int)i); return; }
+    }
+    if (p->parent == G.popupsRoot) {
+      for (size_t i = 0; i < G.popups.size(); i++) if (G.popups[i].layer == p) { rebakePopup((int)i); return; }
+    }
   }
 }
 
@@ -282,10 +421,12 @@ void begin(const Config& cfg) {
   G.W = platform::width(); G.H = platform::height();
   G.comp.init(G.W, G.H);
   G.comp.profile = cfg.profile;
+  G.comp.threads = cfg.renderThreads > 0 ? cfg.renderThreads : platform::defaultRenderThreads();
   G.screensRoot = container(&G.comp.root, G.W, G.H, true);
   G.kbRoot = container(&G.comp.root, G.W, G.H, false);
   input::init(G.kbRoot, G.W, G.H, cfg.keyboardBlur);
   G.popupsRoot = container(&G.comp.root, G.W, G.H, true);
+  G.dynRoot = container(&G.comp.root, G.W, G.H, true);
   if (cfg.bootSplash) G.splash = splash::create(&G.comp.root, G.W, G.H, cfg);
   {
     auto o = std::make_unique<Layer>();  // power-off overlay: flat black, costs no memory
@@ -296,6 +437,7 @@ void begin(const Config& cfg) {
   if (G.splash) { Rect d; if (G.comp.prepare(d)) G.comp.render(d); }  // splash is on screen before the slow bake starts
   // touch the built-in family so a broken font shows up immediately
   if (!montserrat(Weight::Regular)->ok()) platform::log("built-in Montserrat failed to load");
+  if (cfg.ppa) offloadToPPA(true, cfg.ppaMinPixels);
 }
 
 void screen(const std::string& name, View root) {
@@ -312,56 +454,15 @@ void bake() {
   auto& G = g();
   if (!G.began) begin();
   uint32_t t0 = platform::millis();
-  BakeEnv env;
-  env.comp = &G.comp;
-  env.ids = &G.ids;
   std::unique_ptr<Surface> firstSnap;
 
   for (size_t i = 0; i < G.screens.size(); i++) {
-    auto& s = G.screens[i];
-    s.layer = container(G.screensRoot, G.W, G.H, false);
-    s.layer->name = "screen:" + s.name;
-    auto node = s.root.node();
-    node->measure(Size{G.W, G.H});
-    node->place(Rect{0, 0, G.W, G.H});
-    size_t fieldsBefore = input::fieldCount();
-    node->bake(env, s.layer);
-    bool hasFields = input::fieldCount() > fieldsBefore;
-    if (!G.popups.empty() || hasFields) {
-      bool sv = G.splash && G.splash->visible;
-      if (G.splash) G.splash->visible = false;  // keep the splash out of the screen snapshot
-      s.layer->visible = true;
-      auto snap = std::make_unique<Surface>(G.W, G.H);
-      G.comp.snapshot(*snap);
-      s.layer->visible = false;
-      if (G.splash) G.splash->visible = sv;
-      if (!G.popups.empty()) bakeBackdrop(s, *snap);
-      if (hasFields) input::bakeKeyboardBackdrop(s.layer, *snap);  // blurred glass the keyboard sits on
-      if (i == 0) firstSnap = std::move(snap);
-    }
-    if (G.cfg.log) platform::log("baked screen '%s'", s.name.c_str());
+    bakeScreen((int)i, i == 0 ? &firstSnap : nullptr);
+    if (G.cfg.log) platform::log("baked screen '%s'", G.screens[i].name.c_str());
   }
-
-  env.backdrop = firstSnap.get();
-  for (auto& p : G.popups) {
-    p.layer = container(G.popupsRoot, G.W, G.H, false);
-    auto catcher = std::make_unique<Layer>();
-    catcher->w = G.W; catcher->h = G.H; catcher->hit = true;
-    if (p.tapOut) catcher->onTap = []() { dismiss(); };
-    p.layer->add(std::move(catcher));
-    auto node = p.content.node();
-    Size avail = p.style == PopupStyle::Alert ? Size{G.W - 80, G.H - 160} : Size{G.W, G.H};
-    Size sz = node->measure(avail);
-    Rect r;
-    switch (p.style) {
-      case PopupStyle::Alert: r = Rect{(G.W - sz.w) / 2, (G.H - sz.h) / 2, sz.w, sz.h}; break;
-      case PopupStyle::Sheet: r = Rect{0, G.H - sz.h, G.W, sz.h}; break;
-      case PopupStyle::Fullscreen: r = Rect{0, 0, G.W, G.H}; break;
-    }
-    node->place(r);
-    p.contentLayer = node->bake(env, p.layer);
-    p.contentLayer->hit = true;  // absorbs touches so the "tap outside" catcher doesn't fire
-    if (G.cfg.log) platform::log("baked popup '%s'", p.name.c_str());
+  for (size_t i = 0; i < G.popups.size(); i++) {
+    bakePopup((int)i, firstSnap.get());
+    if (G.cfg.log) platform::log("baked popup '%s'", G.popups[i].name.c_str());
   }
   firstSnap.reset();
   input::bakeKeyboard();
@@ -377,8 +478,7 @@ void bake() {
   }
   if (G.splash) {
     Layer* sp = G.splash;
-    G.splash = nullptr;
-    G.anim.animate(&sp->opacity, 0.f, Animation::bezierInOut(750), [sp]() { splash::release(sp); });
+    G.anim.animate(&sp->opacity, 0.f, Animation::bezierInOut(750), [sp]() { splash::release(sp); g().splash = nullptr; });
   }
   if (G.cfg.log)
     platform::log("bake done in %u ms, %u KB of pre-rendered surfaces", (unsigned)(platform::millis() - t0), (unsigned)(Surface::totalBytes() / 1024));
@@ -422,7 +522,7 @@ void present(const std::string& name) {
     if (s.backdrop) {
       s.backdrop->visible = true;
       std::vector<Layer*> lv = s.levels;
-      G.anim.animateValue(0.f, 1.f, Animation::easeOut(300), [lv](float t) { setLevels(lv, t); });
+      G.anim.animateValue(0.f, 1.f, Animation::easeOut(300), [lv](float t) { setLevels(lv, t); }, {}, s.backdrop);
     }
     Layer* c = p.contentLayer;
     switch (p.style) {
@@ -462,7 +562,7 @@ void dismiss() {
     if (bd) bd->visible = false;
     g().popupBusy = false;
   };
-  if (bd) G.anim.animateValue(1.f, 0.f, Animation::easeIn(220), [lv](float t) { setLevels(lv, t); });
+  if (bd) G.anim.animateValue(1.f, 0.f, Animation::easeIn(220), [lv](float t) { setLevels(lv, t); }, {}, bd);
   switch (p.style) {
     case PopupStyle::Alert:
       G.anim.animate(&c->scale, 0.94f, Animation::easeIn(180));
@@ -479,6 +579,7 @@ void dismiss() {
 
 void update() {
   auto& G = g();
+  if (!G.graveyard.empty()) { G.comp.clearOrder(); G.graveyard.clear(); }  // layers removed last frame
   platform::pump();
   uint32_t now = platform::millis();
   float dt = G.lastUpdate ? (float)(now - G.lastUpdate) : 16.f;
@@ -489,6 +590,83 @@ void update() {
   stepPlayers(now);
   Rect d;
   if (G.comp.prepare(d)) G.comp.render(d);
+}
+
+void detachLayerInternal(Layer* l) { detachLayer(l); }
+
+void rerender(const std::string& id) {
+  auto& G = g();
+  auto n = G.nodes.find(id);
+  auto l = G.ids.find(id);
+  if (n == G.nodes.end() || l == G.ids.end()) return;
+  BakeEnv env = makeEnv();
+  Layer* layer = l->second;
+  if (!n->second->rerender(env, layer)) relayoutContaining(layer);  // not repaintable in place: rebuild its screen
+}
+
+void setText(const std::string& id, const std::string& text) {
+  auto& G = g();
+  auto n = G.nodes.find(id);
+  auto l = G.ids.find(id);
+  if (n == G.nodes.end() || l == G.ids.end()) { platform::log("setText: no view with id '%s'", id.c_str()); return; }
+  BakeEnv env = makeEnv();
+  Layer* layer = l->second;
+  int r = liveSetText(n->second, text, env, layer);
+  if (r == 0) platform::log("setText: '%s' contains no Text", id.c_str());
+  else if (r == 2) relayoutContaining(layer);  // grew past its frame: re-lay-out the screen around it
+}
+
+void relayout(const std::string& name) {
+  auto& G = g();
+  if (name.empty()) { if (G.cur >= 0) rebakeScreen(G.cur); return; }
+  for (size_t i = 0; i < G.screens.size(); i++) if (G.screens[i].name == name) { rebakeScreen((int)i); return; }
+  for (size_t i = 0; i < G.popups.size(); i++) if (G.popups[i].name == name) { rebakePopup((int)i); return; }
+  platform::log("relayout: unknown screen/popup '%s'", name.c_str());
+}
+
+LayerRef spawn(View v, int x, int y, const Animation& appear) {
+  auto& G = g();
+  if (!G.dynRoot || !v.valid()) return LayerRef();
+  auto node = v.node();
+  Size sz = node->measure(Size{std::max(0, G.W - x), std::max(0, G.H - y)});
+  node->place(Rect{x, y, sz.w, sz.h});
+  BakeEnv env = makeEnv();
+  Layer* L = node->bake(env, G.dynRoot);
+  G.spawned[L] = v;  // keeps the view alive
+  if (appear.duration > 0) { L->opacity = 0.f; G.anim.animate(&L->opacity, L->restOpacity, appear); }
+  return LayerRef(L);
+}
+
+void remove(LayerRef e, const Animation& fade) {
+  auto& G = g();
+  Layer* l = e.get();
+  if (!l || !G.spawned.count(l)) return;
+  if (fade.duration > 0) G.anim.animate(&l->opacity, 0.f, fade, [l]() { detachLayer(l); });
+  else detachLayer(l);
+}
+
+bool offloadToPPA(bool enable, int minPixels) {
+  auto& G = g();
+  if (!enable) { G.comp.ppa = false; return true; }
+  if (!ppa::compiledIn()) { platform::log("PPA offload unavailable: build with -DFK_USE_PPA on an ESP32-P4 (ESP-IDF 5.3+)"); return false; }
+  if (!ppa::init()) { platform::log("PPA offload unavailable: driver/hardware init failed"); return false; }
+  G.comp.makeStraightAlpha();  // PPA reads straight-alpha ARGB; convert every layer once, up front
+  G.comp.ppaMinPixels = std::max(1, minPixels);
+  G.comp.ppa = true;
+  G.comp.invalidateAll();
+  platform::log("PPA offload on: layers >= %d px are composited by the hardware", G.comp.ppaMinPixels);
+  return true;
+}
+bool ppaActive() { return g().comp.ppa; }
+
+void runForever(int maxFps) {
+  uint32_t frame = 1000u / (uint32_t)std::max(1, maxFps);
+  for (;;) {
+    uint32_t t = platform::millis();
+    update();
+    uint32_t dt = platform::millis() - t;
+    platform::sleepMs(dt < frame ? frame - dt : 1);
+  }
 }
 
 Layer* currentScreenLayer() { auto& G = g(); return G.cur >= 0 ? G.screens[G.cur].layer : nullptr; }

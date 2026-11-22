@@ -1,8 +1,11 @@
 # FluxKit
 
-SwiftUI-style declarative UI for the **M5Stack Tab5** (ESP32-P4, ST7123, 720×1280), in C++.
-**Everything is rendered once, at boot** (`fk::bake()`): layouts, text, shadows, frosted glass, popup blur,
-button pressed-states, spinner frames. At runtime the device only *composites* pre-rendered layers.
+SwiftUI-style declarative UI in C++ for the **M5Stack Tab5** (ESP32-P4, ST7123, 720×1280), any other **ESP32-P4 / S3** board,
+and **Linux** boards such as the **Raspberry Pi Zero 2 W**.
+
+**Everything is rendered once, at boot** (`fk::bake()`): layouts, text, shadows, frosted glass, popup blur, button
+pressed-states, spinner frames. At runtime the device mostly *composites* pre-rendered layers, and **any element can also be
+re-rendered at runtime** (live text, live charts, new elements, structural changes): see *Live rendering*.
 
 ```cpp
 #include <M5Unified.h>
@@ -53,6 +56,53 @@ setDefaultFont(inter);                 // swap the whole UI's font
 ```
 Glyphs are rasterized during `bake()` for exactly the strings you use, so any language your font covers works.
 
+## Platforms
+One codebase, four backends, picked at compile time (`src/fk/Backend.h`):
+
+| Target | Backend | How |
+|---|---|---|
+| **M5Stack Tab5** (ESP32-P4) and other M5 boards | M5Unified / M5GFX | Arduino / PlatformIO, `M5.begin()` then `fk::begin()` |
+| **Any ESP32-P4 / ESP32-S3 board** | ESP-IDF `esp_lcd` (DSI, RGB, SPI, I80 panels) | `fk::platform::useEspLcd(panel, w, h)` before `fk::begin()`; optional `setTouchReader()` / `setPowerOffHandler()` |
+| **Raspberry Pi Zero 2 W** (and Pi 3/4/5, Orange Pi, any Linux SBC) | Linux framebuffer + evdev | CMake (`cmake -B build && cmake --build build -j4`); 16/24/32 bpp, vsync wait, touchscreen or mouse, headless fallback |
+| Desktop / CI | host stub | `-DFLUXKIT_HOST` (tests, screenshots) |
+
+```cpp
+// generic ESP32-P4 board (no M5Unified): hand FluxKit your esp_lcd panel
+esp_lcd_panel_handle_t panel = /* your MIPI-DSI / RGB panel */;
+fk::platform::useEspLcd(panel, 1024, 600);
+fk::platform::setTouchReader([](int* x, int* y) { return my_gt911_read(x, y); });
+fk::begin();
+```
+On Linux, `main()` is yours: call `fk::update()` in a loop (or `fk::runForever()`). Environment overrides: `FLUXKIT_FB`, `FLUXKIT_TOUCH`, `FLUXKIT_TOUCH_SWAP/FLIPX/FLIPY`, and `FLUXKIT_W/H` for headless runs. For the Pi use a KMS driver (`dtoverlay=vc4-kms-v3d`, the default) so `/dev/fb0` exists.
+
+**Multi-core:** `Config::renderThreads` composes each frame in horizontal bands on several cores. Default: all cores up to 4 on Linux (the Zero 2 W has four Cortex-A53), 1 on ESP32 (set 2 on the dual-core P4). Output is bit-identical to single-threaded (tested on 1, 4 threads). **The speedup itself is unmeasured**: my test machine had one core, so only correctness was checked. Small updates stay single-threaded automatically.
+
+## Hardware offload: the ESP32-P4 PPA
+```cpp
+fk::begin(cfg);
+bool ok = fk::offloadToPPA();     // true if the Pixel-Processing Accelerator took over layer blits
+// or: cfg.ppa = true;
+```
+Build with `-DFK_USE_PPA` (ESP-IDF 5.3+, `esp_driver_ppa` component; PlatformIO: `build_flags = -DFK_USE_PPA`). Without it, or on other chips, `offloadToPPA()` logs why and returns `false`; the CPU compositor keeps running.
+
+What it does: layers of at least `ppaMinPixels` (default 4096) are blended by the hardware (`ppa_do_blend`, `ppa_do_fill`): opaque RGB565 layers with constant opacity, ARGB layers (converted once to straight alpha, which is the PPA's input format), and solid fills. Small layers, scaled layers and anything the PPA rejects stay on the CPU, and after 8 consecutive errors the offload switches itself off. Buffers are over-aligned (128 B) so the driver's cache-line rules pass, and the driver handles cache write-back/invalidate.
+
+**Status:** the PPA code is compiled and type-checked against the real ESP-IDF `ppa.h`, and the offload *logic* (rect maths, straight-alpha conversion, opacity, fallback) is tested on a PC against a software stand-in for the hardware (`-DFK_MOCK_PPA`): mean difference from the CPU path 0.1 to 1.5 of 255, 99.7 % of differing pixels within 8 levels. It has **not been run on a real P4**. The likely real-world snag is **MSPI strict alignment** for PSRAM windows (the driver rejects blits whose rows aren't aligned); FluxKit then falls back per layer and tells you once in the log. Measure with `Config::profile`.
+
+## Live rendering
+Everything is baked at boot, but any element can also be **re-rendered while the app runs**:
+
+```cpp
+Text("00:00").id("clock").reserve("00:00:00")       // .reserve(): room for the widest text it will ever show
+setText("clock", "12:34");                          // re-renders just that layer (same layer, in place)
+setText("greet", "a much longer string");           // outgrew its frame? the screen is re-laid-out for you
+rerender("graph");                                  // Canvas draw callback re-runs: live charts. Also: you changed a colour/font/image pixels
+list.add(Text("new row")); relayout();              // structure changed: re-bake the screen (toggles, sliders, typed text keep their state)
+auto toast = spawn(Text("Saved!").padding(18).background(Color::Green).cornerRadius(30), 200, 900, Animation::easeOut(200));
+remove(toast, Animation::easeIn(200));              // build a new element now, remove it later
+```
+Cost: an in-place text update repaints one small surface (glyph bitmaps are cached, so about sub-millisecond for a label on a P4-class core; unmeasured on hardware). `relayout()` re-bakes a whole screen: fine on a button press, not 60 times a second. Layers you remove are freed a frame later and their area is redrawn; handles from `fk::layer(id)` go stale after a `relayout()` of their screen, so fetch them again. `TextStates` / `Canvas` frames remain the zero-raster option for values you know in advance.
+
 ## Boot splash and power off
 ```cpp
 Config cfg; cfg.bootText = "Rendering";      // centred text; the gradient is light blue -> dark blue
@@ -77,7 +127,7 @@ Like everything else it is pre-rendered: each glyph the field can show is render
 * The compositor tracks dirty rects, culls anything hidden behind an opaque layer, memcpy's opaque RGB565 layers, and dithers RGBA content to RGB565.
 
 ## Limits / things to know
-* **Dynamic content must be a pre-rendered state.** Use `TextStates({...})`, `Canvas(..., frames)`, or `reveal` for progress. There is no per-frame text re-render by design.
+* **Live content costs a repaint.** Pre-rendered states (`TextStates`, `Canvas` frames, `reveal`) cost nothing at runtime; `setText()` / `rerender()` repaint one layer on the CPU (see *Live rendering*).
 * **Memory is the trade-off.** Layers with transparency (rounded cards, text) are ARGB8888; fully opaque layers (screen backgrounds, blur backdrops) are stored as dithered RGB565 at 1.8 MB per full screen. The bundled example uses ~19 MB of the 32 MB PSRAM (two screens, a popup, a 24-row scroll list). Each blur level costs 1.8 MB per screen that has popups: lower `Config::blurSteps` (default 2) to save memory. `fk::memoryUsed()` reports it. Each tappable view stores a second (pressed) frame.
 * `.material()` blurs what is painted behind it *in the same layer* (and, for popup content, the first screen). Static glass panels work; glass over a different layer does not.
 * Lifted layers draw above static siblings in the same parent.
@@ -102,5 +152,7 @@ test/host_test.cpp     host render test (g++ -DFLUXKIT_HOST)
 test/bench_popup.cpp   host benchmark of popup-open frame cost
 test/disabled_test.cpp host test of disabled-button behaviour
 test/input_test.cpp    host test: splash, text field + keyboard, power off
+test/live_test.cpp     host test: live text, runtime re-render, relayout, spawn/remove
+test/offload_test.cpp  host test: 1-core vs 4-core vs PPA(mock) frame comparison
 ```
 Licenses: FluxKit code is yours to license; `stb_truetype.h` is public domain/MIT; Montserrat is SIL OFL 1.1 (`src/fk/fonts/OFL.txt`).

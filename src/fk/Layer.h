@@ -53,13 +53,14 @@ struct Layer {
   Appear appear;
 
   // ---- computed each frame by the compositor
+  uint32_t ver = 0;  // bump when the pixels were replaced (live re-render)
   float ws = 1, wx = 0, wy = 0, wo = 1;
   bool wvis = true;
   Rect wclip;    // inherited clip (screen space)
   Rect rect;     // screen rect of this layer (even without pixels)
   Rect bounds;   // screen rect actually drawn (empty if invisible)
   Rect cover;    // conservative fully-covered rect (for occlusion)
-  struct Last { float ws = -1, wx = 0, wy = 0, wo = 0, reveal = 0; bool vis = false; int frame = -1; Rect bounds; } last;
+  struct Last { float ws = -1, wx = 0, wy = 0, wo = 0, reveal = 0; bool vis = false; int frame = -1; uint32_t ver = 0; Rect bounds; } last;
 
   Layer* add(std::unique_ptr<Layer> l) {
     l->parent = this;
@@ -92,6 +93,12 @@ class Compositor {
   void snapshot(Surface& out);
   Layer* hitTest(int x, int y);
   bool profile = false;  // log average frame cost once a second
+  int threads = 1;       // compose in horizontal bands on this many cores
+  bool ppa = false;      // offload layer blits to the ESP32-P4 PPA (see fk::offloadToPPA)
+  int ppaMinPixels = 4096;
+  void addDirty(const Rect& r) { extraDirty_ = extraDirty_.unite(r); }  // e.g. a layer that was removed
+  void clearOrder() { order_.clear(); }
+  void makeStraightAlpha();  // convert every layer surface to straight alpha (PPA input format)
   const std::vector<Layer*>& order() const { return order_; }
   void bringToFront(Layer* l);
   void invalidateAll() { forceFull_ = true; }  // redraw the whole screen on the next prepare()
@@ -106,9 +113,13 @@ class Compositor {
   bool forceFull_ = false;
   void walk(Layer* l, const World& parent);
   void composeTo(Rect d, uint16_t* tile);
-  void drawLayer(Layer* l, const Rect& d, uint16_t* tile);
-  void draw565(Layer* l, const Rect& d, uint16_t* tile);
-  void drawSolid(Layer* l, const Rect& d, uint16_t* tile);
+  Rect extraDirty_;
+  int ppaFails_ = 0;
+  // d = the tile's rectangle (origin/stride); clip = the part of it this call may touch (a band when multi-threaded)
+  void drawLayer(Layer* l, const Rect& d, const Rect& clip, uint16_t* tile);
+  void draw565(Layer* l, const Rect& d, const Rect& clip, uint16_t* tile);
+  void drawSolid(Layer* l, const Rect& d, const Rect& clip, uint16_t* tile);
+  bool drawPPA(Layer* l, const Rect& d, uint16_t* tile);
 };
 
 }  // namespace fk

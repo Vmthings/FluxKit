@@ -63,6 +63,12 @@ class View {
   View foreground(Color c) const;
   View multilineAlign(Align a) const;
   View lineLimit(int n) const;
+  View reserve(const std::string& widestSample) const;  // Text: reserve room so live updates never need a re-layout
+  View alignText(Align a) const;                         // Text: where it sits in its frame (Leading for counters)
+
+  // ---- runtime structure (then call fk::relayout())
+  View add(View child) const;      // append a child to a VStack / HStack / ZStack
+  View clearChildren() const;
 
   // ---- behaviour
   // Disabled look: greyed out. Tapping it fades to red, wiggles, then fades back to grey. All three looks

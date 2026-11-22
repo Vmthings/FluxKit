@@ -76,6 +76,7 @@ Layer* Node::makeLayer(BakeEnv& env, Layer* parent, Rect b, const char*) {
   if (hasAppear) { L->hasAppear = true; L->appear = appear; }
   Layer* raw = parent->add(std::move(L));
   if (!id.empty() && env.ids) (*env.ids)[id] = raw;
+  if (!id.empty() && env.nodes) (*env.nodes)[id] = this;
   return raw;
 }
 
@@ -162,10 +163,37 @@ Layer* Node::bakeDisableable(BakeEnv& env, Layer* parent) {
       L->tx = 12.f * std::exp(-3.4f * t) * std::sin(t * 6.2831853f * 3.5f);  // wiggle
       float r = t < 0.15f ? t / 0.15f : t < 0.45f ? 1.f : 1.f - (t - 0.45f) / 0.55f;  // fade in, hold, fade out
       rL->opacity = r * r * (3.f - 2.f * r);
-    }, [=]() { L->tx = 0.f; rL->opacity = 0.f; st->busy = false; });
+    }, [=]() { L->tx = 0.f; rL->opacity = 0.f; st->busy = false; }, L);
   };
   for (Node* d : deferred) d->bake(env, L);
   return L;
+}
+
+bool Node::rerender(BakeEnv& env, Layer* L) {
+  if (!inPlaceRerender() || !L) return false;
+  Rect b = layerBounds();
+  if (L->w != b.w || L->h != b.h) return false;  // size changed: the caller must relayout
+  auto surf = std::make_shared<Surface>(b.w, b.h);
+  std::vector<Node*> children;                    // child layers are left untouched
+  paintTree(*surf, b.x, b.y, env, children);
+  bool opaque = surf->isOpaque();
+  if (opaque && !tap && allowCompact()) {
+    L->p565 = raster::toRGB565(*surf);
+    L->frames.clear();
+  } else {
+    L->p565.reset();
+    L->frames.clear();
+    L->frames.push_back(surf);
+    if (tap && surf->data) {
+      auto dark = std::make_shared<Surface>(b.w, b.h);
+      memcpy(dark->data, surf->data, surf->bytes());
+      raster::dim(*dark, 0.82f);
+      L->frames.push_back(dark);
+    }
+  }
+  L->opaque = opaque;
+  L->ver++;  // tells the compositor the pixels changed
+  return true;
 }
 
 Layer* Node::bakeBox(BakeEnv& env, Layer* parent) {
@@ -289,7 +317,29 @@ class TextNode : public Node {
       for (auto& l : lines) w = std::max(w, (int)std::ceil(text::measure(f, l)));
       h = std::max(h, (int)lines.size() * text::lineHeight(f));
     }
+    if (!reserveText.empty()) {
+      auto lines = linesOf(f, reserveText, ca.w);
+      for (auto& l : lines) w = std::max(w, (int)std::ceil(text::measure(f, l)));
+      h = std::max(h, (int)lines.size() * text::lineHeight(f));
+    }
     return Size{w, h};
+  }
+  Node* findText() override { return this; }
+  bool rerender(BakeEnv& env, Layer* L) override {
+    if (variants.size() <= 1) return Node::rerender(env, L);
+    Rect b = layerBounds();
+    if (!L || L->w != b.w || L->h != b.h) return false;
+    L->p565.reset(); L->frames.clear();
+    for (size_t i = 0; i < variants.size(); i++) {
+      paintIndex = (int)i;
+      auto surf = std::make_shared<Surface>(b.w, b.h);
+      std::vector<Node*> dummy;
+      paintTree(*surf, b.x, b.y, env, dummy);
+      L->frames.push_back(surf);
+    }
+    paintIndex = 0;
+    L->ver++;
+    return true;
   }
   bool isLayerRoot() const override { return Node::isLayerRoot() || variants.size() > 1; }
   bool allowCompact() const override { return variants.size() <= 1; }
@@ -301,7 +351,8 @@ class TextNode : public Node {
     int lh = text::lineHeight(f), asc = text::ascent(f), blockW = 0;
     for (auto& l : lines) blockW = std::max(blockW, (int)std::ceil(text::measure(f, l)));
     int blockH = (int)lines.size() * lh;
-    float x0 = (float)(cr.x - ox) + std::floor((cr.w - blockW) * 0.5f);
+    float slack = (float)(cr.w - blockW);
+    float x0 = (float)(cr.x - ox) + std::floor(blockAlign == Align::Leading ? 0.f : blockAlign == Align::Center ? slack * 0.5f : slack);
     float y0 = (float)(cr.y - oy) + std::floor((cr.h - blockH) * 0.5f);
     for (size_t i = 0; i < lines.size(); i++) {
       float lw = text::measure(f, lines[i]);
@@ -374,6 +425,25 @@ class CanvasNode : public Node {
     L->onTap = tap;
     return L;
   }
+  // fk::rerender("canvasId"): run the draw callback again (live charts, meters, drawings)
+  bool rerender(BakeEnv& env, Layer* L) override {
+    Rect b = layerBounds();
+    if (!L || L->w != b.w || L->h != b.h) return false;
+    Rect cr = contentRect();
+    L->frames.clear();
+    for (int i = 0; i < std::max(1, frames); i++) {
+      auto surf = std::make_shared<Surface>(b.w, b.h);
+      paintSelf(*surf, b.x, b.y, env);
+      auto cv = std::make_shared<Surface>(cr.w, cr.h);
+      Painter p(*cv);
+      if (draw) draw(p, i, std::max(1, frames));
+      raster::blend(*surf, *cv, cr.x - b.x, cr.y - b.y);
+      L->frames.push_back(surf);
+    }
+    L->frame = std::min(L->frame, (int)L->frames.size() - 1);
+    L->ver++;
+    return true;
+  }
 };
 
 static std::unique_ptr<Layer> newSubLayer(Layer* parent, SurfacePtr s, int lx, int ly, int lw, int lh) {
@@ -386,6 +456,7 @@ static std::unique_ptr<Layer> newSubLayer(Layer* parent, SurfacePtr s, int lx, i
 
 class ToggleNode : public Node {
  public:
+  bool inPlaceRerender() const override { return false; }
   bool on = false;
   std::function<void(bool)> cb;
   Size contentSize(Size) override { return Size{52, 32}; }
@@ -422,6 +493,7 @@ class ToggleNode : public Node {
 
 class SliderNode : public Node {
  public:
+  bool inPlaceRerender() const override { return false; }
   float mn = 0, mx = 1, value = 0;
   std::function<void(float)> cb;
   bool contentFlexW() const override { return true; }
@@ -453,6 +525,7 @@ class SliderNode : public Node {
     L->onTouch = [=](int, float lx, float) {
       float t = std::clamp((lx - kd * 0.5f) / usable, 0.f, 1.f);
       setT(t);
+      value = mn + t * (mx - mn);
       if (cb) cb(mn + t * (mx - mn));
     };
     return L;
@@ -461,12 +534,14 @@ class SliderNode : public Node {
 
 class TextFieldNode : public Node {
  public:
+  bool inPlaceRerender() const override { return false; }
   std::string placeholder;
   std::function<void(const std::string&)> onChange, onSubmit;
   bool contentFlexW() const override { return true; }
   Size contentSize(Size ca) override { return Size{ca.w >= Unbounded ? 240 : 0, text::lineHeight(resolvedFont())}; }
   bool isLayerRoot() const override { return true; }
   Layer* bake(BakeEnv& env, Layer* parent) override {
+    bool fresh = !input::findField(id);
     input::FieldState* fs = input::newField(id);
     fs->maxLen = maxLen > 0 ? maxLen : 48;
     fs->secure = secureText;
@@ -516,7 +591,7 @@ class TextFieldNode : public Node {
 
     fs->container = L; fs->row = row; fs->cursor = cur; fs->glyphs = gs; fs->innerW = cr.w;
     L->onTap = [fs]() { input::focus(fs); };
-    input::setText(fs, initialText);
+    if (fresh) input::setText(fs, initialText);
     input::refresh(fs, false, 0);
     return L;
   }
@@ -524,6 +599,7 @@ class TextFieldNode : public Node {
 
 class ProgressNode : public Node {
  public:
+  bool inPlaceRerender() const override { return false; }
   float value = 0;
   bool contentFlexW() const override { return true; }
   Size contentSize(Size) override { return Size{0, 8}; }
@@ -546,6 +622,7 @@ class ProgressNode : public Node {
 
 class ScrollNode : public Node {
  public:
+  bool inPlaceRerender() const override { return false; }
   int contentH = 0;
   bool contentFlexW() const override { return true; }
   bool contentFlexH() const override { return true; }
@@ -606,6 +683,9 @@ View View::maxLength(int n) const { N->maxLen = n; return *this; }
 View View::returnKey(const std::string& l) const { N->returnLabel = l; return *this; }
 View View::charset(const std::string& s) const { N->extraCharset = s; return *this; }
 View View::initialText(const std::string& s) const { N->initialText = s; return *this; }
+View View::reserve(const std::string& s) const { N->reserveText = s; return *this; }
+View View::alignText(Align a) const { N->blockAlign = a; return *this; }
+View View::clearChildren() const { N->kids.clear(); return *this; }
 View View::onTap(std::function<void()> fn) const { N->tap = std::move(fn); return *this; }
 View View::disabled(bool d) const {
   N->canDisable = true; N->startDisabled = d;
@@ -616,6 +696,23 @@ View View::id(const std::string& s) const { N->id = s; return *this; }
 View View::appear(Appear a) const { N->hasAppear = true; N->appear = a; return *this; }
 View View::layer() const { N->forceLayer = true; return *this; }
 #undef N
+
+View View::add(View child) const {
+  if (!child.valid()) return *this;
+  if (auto* s = dynamic_cast<StackNode*>(n_.get())) s->add(child.node());
+  else if (auto* z = dynamic_cast<ZStackNode*>(n_.get())) z->add(child.node());
+  return *this;
+}
+
+int liveSetText(Node* owner, const std::string& s, BakeEnv& env, Layer* layer) {
+  auto* t = dynamic_cast<TextNode*>(owner->findText());
+  if (!t) return 0;
+  t->variants[0] = s;
+  Rect cr = t->contentRect();
+  Size need = t->contentSize(Size{cr.w, Unbounded});
+  if (need.w > cr.w || need.h > cr.h) return 2;
+  return owner->rerender(env, layer) ? 1 : 2;
+}
 
 // =================================================================== factories
 static View stack(bool vertical, std::vector<View>& kids) {

@@ -10,6 +10,7 @@ struct BakeEnv {
   Compositor* comp = nullptr;
   const Surface* backdrop = nullptr;  // absolute-origin screen snapshot for material (popups)
   std::unordered_map<std::string, Layer*>* ids = nullptr;
+  std::unordered_map<std::string, class Node*>* nodes = nullptr;  // id -> view node (for live re-rendering)
 };
 
 class Node : public std::enable_shared_from_this<Node> {
@@ -33,6 +34,8 @@ class Node : public std::enable_shared_from_this<Node> {
   std::function<void()> tap;
   std::string id;
   bool forceLayer = false;
+  std::string reserveText;                 // Text: keep room for the widest string it may show (avoids re-layout)
+  Align blockAlign = Align::Center;        // Text: where the text sits inside its frame
   int maxLen = 0; bool secureText = false;                       // TextField
   std::string returnLabel = "Done", extraCharset, initialText;     // TextField
   bool canDisable = false, startDisabled = false;  // .disabled(): pre-render enabled + disabled + error looks
@@ -59,7 +62,11 @@ class Node : public std::enable_shared_from_this<Node> {
   virtual bool isLayerRoot() const { return forceLayer || tap || canDisable || !id.empty() || opacity < 1.f || hasAppear; }
   virtual void paintContent(Surface&, int /*ox*/, int /*oy*/, BakeEnv&) {}
   virtual Layer* bake(BakeEnv& env, Layer* parent) { return bakeGeneric(env, parent); }
-  virtual bool allowCompact() const { return true; }  // may be stored as RGB565 when fully opaque
+  virtual bool allowCompact() const { return true; }
+  // Live re-rendering: repaint this node into its existing layer (same size). False = needs fk::relayout().
+  virtual bool inPlaceRerender() const { return !canDisable; }
+  virtual bool rerender(BakeEnv& env, Layer* layer);
+  virtual Node* findText() { for (auto& k : kids) if (!k->isLayerRoot()) if (Node* t = k->findText()) return t; return nullptr; }  // may be stored as RGB565 when fully opaque
   Font resolvedFont() const;
   Color resolvedFg() const;
   Rect layerBounds() const;
@@ -75,5 +82,8 @@ class Node : public std::enable_shared_from_this<Node> {
   void finishLayer(BakeEnv& env, Layer* l);
   friend class TextNode;
 };
+
+// Change the first Text inside `owner` and repaint. 0 = no Text found, 1 = repainted in place, 2 = text grew: relayout needed.
+int liveSetText(Node* owner, const std::string& s, BakeEnv& env, Layer* layer);
 
 }  // namespace fk

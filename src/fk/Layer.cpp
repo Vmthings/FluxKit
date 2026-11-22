@@ -1,14 +1,16 @@
 #include "Layer.h"
-#include "Platform.h"
-#include "Raster.h"
 #include <cstring>
+#include "Platform.h"
+#include "Ppa.h"
+#include "Raster.h"
 
 namespace fk {
 
 void Compositor::init(int w, int h) {
   w_ = w; h_ = h;
   if (tile_) platform::release(tile_);
-  tile_ = (uint16_t*)platform::alloc((size_t)w * h * 2);
+  size_t bytes = ((size_t)w * h * 2 + 127) & ~(size_t)127;
+  tile_ = (uint16_t*)platform::allocAligned(bytes, 128);  // over-aligned: valid PPA output buffer
   root.w = w; root.h = h;
   root.wclip = Rect{0, 0, w, h};
 }
@@ -68,14 +70,16 @@ bool Compositor::prepare(Rect& dirty) {
   for (Layer* l : order_) {
     auto& L = l->last;
     bool vis = !l->bounds.empty();
-    bool changed = L.bounds != l->bounds || L.vis != vis || L.frame != l->frame ||
+    bool changed = L.bounds != l->bounds || L.vis != vis || L.frame != l->frame || L.ver != l->ver ||
                    (vis && (L.wo != l->wo || L.ws != l->ws || L.wx != l->wx || L.wy != l->wy || L.reveal != l->reveal));
     if (changed) {
       dirty = dirty.unite(L.bounds).unite(l->bounds);
-      L.bounds = l->bounds; L.vis = vis; L.frame = l->frame;
+      L.bounds = l->bounds; L.vis = vis; L.frame = l->frame; L.ver = l->ver;
       L.wo = l->wo; L.ws = l->ws; L.wx = l->wx; L.wy = l->wy; L.reveal = l->reveal;
     }
   }
+  dirty = dirty.unite(extraDirty_);
+  extraDirty_ = Rect{};
   if (forceFull_) { dirty = screen; forceFull_ = false; }
   dirty = dirty.intersect(screen);
   return !dirty.empty();
@@ -96,7 +100,7 @@ void Compositor::bringToFront(Layer* l) {
     if (p->kids[i].get() == l) { std::rotate(p->kids.begin() + i, p->kids.begin() + i + 1, p->kids.end()); return; }
 }
 
-// ------------------------------------------------------------------ drawing
+// ------------------------------------------------------------------ pixel helpers
 // 4x4 ordered dither: hides RGB565 banding in gradients, shadows and blurs at ~zero cost
 static const uint8_t kBayer[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
 static inline uint16_t pack565(uint32_t r, uint32_t g, uint32_t b, uint32_t dm) {
@@ -123,6 +127,32 @@ static inline uint32_t lerpPx(uint32_t a, uint32_t b, uint32_t f) {
   return rb | ag;
 }
 
+// straight <-> premultiplied alpha (the PPA wants straight alpha; the CPU rasterizer works premultiplied)
+static inline uint32_t premulPx(uint32_t p) {
+  uint32_t a = p >> 24;
+  if (a == 255) return p;
+  if (a == 0) return 0;
+  return (a << 24) | ((((p >> 16) & 255) * a + 127) / 255 << 16) | ((((p >> 8) & 255) * a + 127) / 255 << 8) | (((p & 255) * a + 127) / 255);
+}
+static void toStraight(Surface& s) {
+  if (s.straight || !s.data) return;
+  for (size_t i = 0, n = (size_t)s.w * s.h; i < n; i++) {
+    uint32_t p = s.data[i], a = p >> 24;
+    if (a == 0 || a == 255) continue;
+    uint32_t r = std::min<uint32_t>(255, (((p >> 16) & 255) * 255 + a / 2) / a);
+    uint32_t g = std::min<uint32_t>(255, (((p >> 8) & 255) * 255 + a / 2) / a);
+    uint32_t b = std::min<uint32_t>(255, ((p & 255) * 255 + a / 2) / a);
+    s.data[i] = (a << 24) | (r << 16) | (g << 8) | b;
+  }
+  s.straight = true;
+}
+
+static void walkSurfaces(Layer* l, const std::function<void(Surface&)>& fn) {
+  for (auto& f : l->frames) if (f) fn(*f);
+  for (auto& k : l->kids) walkSurfaces(k.get(), fn);
+}
+void Compositor::makeStraightAlpha() { walkSurfaces(&root, [](Surface& s) { toStraight(s); }); }
+
 // d + (s-d)*a/32 on packed RGB565 (Bodmer's SWAR blend)
 static inline uint16_t mix565(uint16_t d, uint16_t s, uint32_t a) {
   uint32_t D = (d | ((uint32_t)d << 16)) & 0x07E0F81Fu, S = (s | ((uint32_t)s << 16)) & 0x07E0F81Fu;
@@ -130,8 +160,9 @@ static inline uint16_t mix565(uint16_t d, uint16_t s, uint32_t a) {
   return (uint16_t)(R | (R >> 16));
 }
 
-void Compositor::draw565(Layer* l, const Rect& d, uint16_t* tile) {
-  Rect r = l->bounds.intersect(d);
+// ------------------------------------------------------------------ drawing (CPU)
+void Compositor::draw565(Layer* l, const Rect& d, const Rect& clip, uint16_t* tile) {
+  Rect r = l->bounds.intersect(clip);
   if (r.empty()) return;
   const Surface565& S = *l->p565;
   const uint32_t op = (uint32_t)std::lround(std::clamp(l->wo, 0.f, 1.f) * 255.f);
@@ -152,8 +183,7 @@ void Compositor::draw565(Layer* l, const Rect& d, uint16_t* tile) {
     }
     return;
   }
-  // scaled opaque layer (rare): nearest neighbour
-  float inv = 1.f / l->ws;
+  float inv = 1.f / l->ws;  // scaled opaque layer (rare): nearest neighbour
   for (int y = r.y; y < r.bottom(); y++) {
     int sy = (int)((y + 0.5f - l->wy) * inv);
     if (sy < 0 || sy >= S.h) continue;
@@ -167,8 +197,8 @@ void Compositor::draw565(Layer* l, const Rect& d, uint16_t* tile) {
   }
 }
 
-void Compositor::drawSolid(Layer* l, const Rect& d, uint16_t* tile) {
-  Rect r = l->bounds.intersect(d);
+void Compositor::drawSolid(Layer* l, const Rect& d, const Rect& clip, uint16_t* tile) {
+  Rect r = l->bounds.intersect(clip);
   if (r.empty()) return;
   uint32_t op = (uint32_t)std::lround(std::clamp(l->wo, 0.f, 1.f) * 255.f), a = (op * 32 + 127) / 255;
   for (int y = r.y; y < r.bottom(); y++) {
@@ -178,13 +208,49 @@ void Compositor::drawSolid(Layer* l, const Rect& d, uint16_t* tile) {
   }
 }
 
-void Compositor::drawLayer(Layer* l, const Rect& d, uint16_t* tile) {
-  if (l->isSolid) { drawSolid(l, d, tile); return; }
-  if (l->p565) { draw565(l, d, tile); return; }
+// Offload one layer to the PPA. Returns true if the hardware drew it (or there was nothing to draw).
+bool Compositor::drawPPA(Layer* l, const Rect& d, uint16_t* tile) {
   Rect r = l->bounds.intersect(d);
+  if (r.empty()) return true;
+  if ((long)r.w * r.h < ppaMinPixels) return false;  // tiny layers: a PPA transaction costs more than the CPU blit
+  const uint32_t op = (uint32_t)std::lround(std::clamp(l->wo, 0.f, 1.f) * 255.f);
+  bool ok = false;
+  if (l->isSolid) {
+    if (op < 255) return false;
+    ok = ppa::fill565(tile, d.w, d.h, r.x - d.x, r.y - d.y, r.w, r.h, l->solid565);
+  } else {
+    if (std::fabs(l->ws - 1.f) >= 1e-4f || l->pixelScale != 1.f) return false;  // scaled layers stay on the CPU
+    int ox = (int)std::lround(l->wx), oy = (int)std::lround(l->wy);
+    int lim = (int)std::lround(l->pixW() * l->reveal);
+    int x0 = std::max(r.x, ox), x1 = std::min(r.right(), ox + lim), y0 = std::max(r.y, oy), y1 = std::min(r.bottom(), oy + l->pixH());
+    if (x1 <= x0 || y1 <= y0) return true;
+    int w = x1 - x0, h = y1 - y0;
+    if (l->p565) {
+      ok = ppa::blend565(tile, d.w, d.h, x0 - d.x, y0 - d.y, w, h, l->p565->data, l->p565->w, l->p565->h, x0 - ox, y0 - oy, op);
+    } else {
+      Surface& S = *l->frames[std::clamp(l->frame, 0, (int)l->frames.size() - 1)];
+      if (!S.data) return true;
+      toStraight(S);
+      ok = ppa::blendArgb(tile, d.w, d.h, x0 - d.x, y0 - d.y, w, h, S.data, S.w, S.h, x0 - ox, y0 - oy, op);
+    }
+  }
+  if (ok) { ppaFails_ = 0; return true; }
+  if (++ppaFails_ >= 8) {
+    ppa = false;
+    platform::log("PPA offload disabled after repeated errors: falling back to the CPU compositor");
+  }
+  return false;
+}
+
+void Compositor::drawLayer(Layer* l, const Rect& d, const Rect& clip, uint16_t* tile) {
+  if (ppa && clip == d && drawPPA(l, d, tile)) return;
+  if (l->isSolid) { drawSolid(l, d, clip, tile); return; }
+  if (l->p565) { draw565(l, d, clip, tile); return; }
+  Rect r = l->bounds.intersect(clip);
   if (r.empty()) return;
   const Surface& S = *l->frames[std::clamp(l->frame, 0, (int)l->frames.size() - 1)];
   if (!S.data) return;
+  const bool straight = S.straight;
   const uint32_t op = (uint32_t)std::lround(std::clamp(l->wo, 0.f, 1.f) * 255.f);
   const bool simple = std::fabs(l->ws - 1.f) < 1e-4f && l->pixelScale == 1.f;
 
@@ -200,6 +266,7 @@ void Compositor::drawLayer(Layer* l, const Rect& d, uint16_t* tile) {
         int sx = x - ox;
         if (sx < 0 || sx >= lim) continue;
         uint32_t p = sp[sx];
+        if (straight) p = premulPx(p);
         if (op < 255) p = raster::scale(p, op);
         if (p >> 24) dp[x] = blend565(dp[x], p, kBayer[((y & 3) << 2) | (x & 3)]);
       }
@@ -211,8 +278,7 @@ void Compositor::drawLayer(Layer* l, const Rect& d, uint16_t* tile) {
   const float inv = 1.f / l->ws, ps = l->pixelScale;
   const float limX = l->w * l->reveal;
   std::vector<int> xa(r.w), xb(r.w);
-  std::vector<uint8_t> xf(r.w);
-  std::vector<uint8_t> xv(r.w);
+  std::vector<uint8_t> xf(r.w), xv(r.w);
   for (int i = 0; i < r.w; i++) {
     float qx = (r.x + i + 0.5f - l->wx) * inv;
     xv[i] = (qx >= 0 && qx < limX) ? 1 : 0;
@@ -233,9 +299,9 @@ void Compositor::drawLayer(Layer* l, const Rect& d, uint16_t* tile) {
     uint16_t* dp = tile + (size_t)(y - d.y) * d.w + (r.x - d.x);
     for (int i = 0; i < r.w; i++) {
       if (!xv[i]) continue;
-      uint32_t t = lerpPx(ra[xa[i]], ra[xb[i]], xf[i]);
-      uint32_t b = lerpPx(rb[xa[i]], rb[xb[i]], xf[i]);
-      uint32_t p = lerpPx(t, b, fy);
+      uint32_t p00 = ra[xa[i]], p10 = ra[xb[i]], p01 = rb[xa[i]], p11 = rb[xb[i]];
+      if (straight) { p00 = premulPx(p00); p10 = premulPx(p10); p01 = premulPx(p01); p11 = premulPx(p11); }
+      uint32_t p = lerpPx(lerpPx(p00, p10, xf[i]), lerpPx(p01, p11, xf[i]), fy);
       if (op < 255) p = raster::scale(p, op);
       if (p >> 24) dp[i] = blend565(dp[i], p, kBayer[((y & 3) << 2) | ((r.x + i) & 3)]);
     }
@@ -252,8 +318,18 @@ void Compositor::composeTo(Rect d, uint16_t* tile) {
     Layer* l = list[i];
     if (l->opaque && l->wo >= 0.999f && !l->cover.empty() && l->cover.intersect(d) == d) { start = i; covered = true; break; }
   }
-  if (!covered) memset(tile, 0, (size_t)d.w * d.h * 2);
-  for (size_t i = start; i < list.size(); i++) drawLayer(list[i], d, tile);
+  auto run = [&](const Rect& clip) {
+    if (!covered)
+      for (int y = clip.y; y < clip.bottom(); y++) memset(tile + (size_t)(y - d.y) * d.w + (clip.x - d.x), 0, (size_t)clip.w * 2);
+    for (size_t i = start; i < list.size(); i++) drawLayer(list[i], d, clip, tile);
+  };
+  int n = (ppa || threads <= 1) ? 1 : std::min(threads, d.h / 24);  // PPA transactions are issued from one thread
+  if (n > 1 && (long)d.w * d.h >= 16384) {
+    platform::parallelFor(n, [&](int k) {
+      int y0 = d.y + d.h * k / n, y1 = d.y + d.h * (k + 1) / n;
+      run(Rect{d.x, y0, d.w, y1 - y0});
+    });
+  } else run(d);
 }
 
 void Compositor::render(Rect d) {

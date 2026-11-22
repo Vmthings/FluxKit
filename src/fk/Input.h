@@ -10,7 +10,8 @@
 
 namespace fk {
 
-Layer* currentScreenLayer();  // defined in App.cpp
+Layer* currentScreenLayer();    // defined in App.cpp
+void detachLayerInternal(Layer*);  // defined in App.cpp: safely removes a layer subtree
 
 namespace input {
 
@@ -45,6 +46,7 @@ std::string encode(const std::vector<uint32_t>& cps);
 FieldState* newField(const std::string& id);
 FieldState* findField(const std::string& id);
 size_t fieldCount();
+size_t fieldBakeCount();  // how many times a TextField was baked (counts re-bakes too)
 void registerReturnLabel(const std::string& label);
 void refresh(FieldState* f, bool animate, size_t prevLen);
 std::string getText(FieldState* f);

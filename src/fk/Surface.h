@@ -27,6 +27,7 @@ class Surface {
 
   int w = 0, h = 0;
   uint32_t* data = nullptr;
+  bool straight = false;  // pixels are straight (non-premultiplied) alpha: set when offloaded to the PPA
 
   uint32_t* row(int y) { return data + (size_t)y * w; }
   const uint32_t* row(int y) const { return data + (size_t)y * w; }

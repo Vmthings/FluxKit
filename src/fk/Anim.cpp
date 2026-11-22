@@ -47,6 +47,18 @@ void Animator::cancel(float* target) {
     if (tw_[i].target == target) tw_.erase(tw_.begin() + i); else i++;
 }
 
+void Animator::cancelRange(const void* lo, const void* hi) {
+  for (size_t i = 0; i < tw_.size();) {
+    const void* t = tw_[i].target;
+    if (t && t >= lo && t < hi) tw_.erase(tw_.begin() + i); else i++;
+  }
+}
+void Animator::cancelOwner(const void* owner) {
+  for (size_t i = 0; i < tw_.size();) {
+    if (tw_[i].owner == owner) tw_.erase(tw_.begin() + i); else i++;
+  }
+}
+
 void Animator::animate(float* target, float to, const Animation& a, std::function<void()> done) {
   cancel(target);
   if (a.duration == 0 && a.delayMs == 0) {
@@ -61,8 +73,9 @@ void Animator::animate(float* target, float to, const Animation& a, std::functio
   tw_.push_back(std::move(t));
 }
 
-void Animator::animateValue(float from, float to, const Animation& a, std::function<void(float)> upd, std::function<void()> done) {
+void Animator::animateValue(float from, float to, const Animation& a, std::function<void(float)> upd, std::function<void()> done, const void* owner) {
   Tween t;
+  t.owner = owner;
   t.from = from; t.to = to;
   t.start = platform::millis() + a.delayMs; t.dur = std::max<uint32_t>(1, a.duration);
   t.curve = a.curve; t.bounce = a.bounce; memcpy(t.bz, a.bz, sizeof t.bz); t.upd = std::move(upd); t.done = std::move(done);

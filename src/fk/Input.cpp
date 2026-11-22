@@ -107,7 +107,18 @@ std::shared_ptr<GlyphSet> glyphSet(const Font& f0, Color c, const std::vector<ui
 }
 
 // ------------------------------------------------------------------ fields
+static size_t g_fieldBakes = 0;
+size_t fieldBakeCount() { return g_fieldBakes; }
 FieldState* newField(const std::string& id) {
+  g_fieldBakes++;
+  auto old = KB.byId.find(id);
+  if (old != KB.byId.end()) {  // re-bake: keep the typed text, drop the dead layer pointers
+    FieldState* f = old->second;
+    f->container = f->ph = f->row = f->cursor = f->ring = nullptr;
+    f->chars.clear();
+    f->glyphs.reset();
+    return f;
+  }
   KB.fields.push_back(std::make_unique<FieldState>());
   FieldState* f = KB.fields.back().get();
   f->id = id;
@@ -318,6 +329,8 @@ Layer* bakeKeyboardBackdrop(Layer* screenLayer, const Surface& snap) {
   Material m; m.blur = (float)KB.blur; m.tint = Color(0x101018, 175);
   raster::material(dst, 0, 0, KB.W, KB.kbH, 0.f, m, snap, 0, 0, 0, KB.H - KB.kbH);
   raster::line(dst, 0, 0.5f, (float)KB.W, 0.5f, 1.f, Color(0xFFFFFF, 46));  // top hairline
+  auto old = KB.backdropOf.find(screenLayer);
+  if (old != KB.backdropOf.end()) detachLayerInternal(old->second);  // screen was re-baked
   Layer* L = addLayer(KB.root, nullptr, 0, 0, KB.W, KB.kbH);
   L->p565 = raster::toRGB565(dst);
   L->opaque = true;

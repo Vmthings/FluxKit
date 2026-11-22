@@ -13,6 +13,8 @@ void setup() {
   // "Made with FluxKit" at the bottom). When bake() finishes it fades into the UI below.
   Config fk_cfg;
   fk_cfg.bootText = "Rendering";   // change it: "Starting up", "Hello", ...
+  // fk_cfg.renderThreads = 2;   // ESP32-P4 has two cores: compose frames in two bands
+  // fk_cfg.ppa = true;          // ESP32-P4 + build flag -DFK_USE_PPA: offload layer blits to the PPA
   fk::begin(fk_cfg);
 
   // ---- fonts -------------------------------------------------------------
@@ -33,6 +35,7 @@ void setup() {
         Text("FluxKit").font(Font::bold(64)).appear(Appear::slideUp(60)),
         Text("Everything rendered at boot").font(Font::medium(24)).foreground(Color(0xB0C4DE))
             .appear(Appear::slideUp(60).delay(80)),
+        Text("up 0s").id("uptime").reserve("up 99999s").font(Font::regular(22)).foreground(Color(0x8FD3FF)),   // live text
         Spacer(),
         VStack({
           HStack({Text("Wi-Fi").font(Font::semibold(22)), Spacer(),
@@ -78,4 +81,13 @@ void setup() {
   bake();  // <- all rasterization happens here, once
 }
 
-void loop() { fk::update(); }
+void loop() {
+  fk::update();
+  static uint32_t last = 0;
+  if (millis() - last >= 1000) {   // live text: re-rendered at runtime, in place (reserve() keeps it from re-laying-out)
+    last = millis();
+    char buf[24];
+    snprintf(buf, sizeof buf, "up %lus", (unsigned long)(last / 1000));
+    setText("uptime", buf);
+  }
+}

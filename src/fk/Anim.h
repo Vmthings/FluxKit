@@ -47,14 +47,19 @@ struct Appear {
 class Animator {
  public:
   void animate(float* target, float to, const Animation& a, std::function<void()> done = {});
-  void animateValue(float from, float to, const Animation& a, std::function<void(float)> update, std::function<void()> done = {});
+  // `owner` tags a callback tween so it can be cancelled when whatever the callback touches is destroyed
+  void animateValue(float from, float to, const Animation& a, std::function<void(float)> update,
+                    std::function<void()> done = {}, const void* owner = nullptr);
   void cancel(float* target);
+  void cancelRange(const void* lo, const void* hi);  // cancel tweens whose target lies in [lo, hi)
+  void cancelOwner(const void* owner);
   void step(uint32_t now);
   bool active() const { return !tw_.empty(); }
 
  private:
   struct Tween {
     float* target = nullptr;
+    const void* owner = nullptr;
     float from = 0, to = 0;
     uint32_t start = 0, dur = 0;
     Curve curve = Curve::Linear;
