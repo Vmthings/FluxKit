@@ -26,6 +26,12 @@ void release(void* p) { heap_caps_free(p); }
 uint32_t millis() { return (uint32_t)(esp_timer_get_time() / 1000ULL); }
 uint64_t micros() { return (uint64_t)esp_timer_get_time(); }
 void sleepMs(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms ? ms : 1)); }
+void yield() {  // a long bake would otherwise starve the idle task and trip the task watchdog (a reboot)
+  static uint64_t last = 0;
+  uint64_t now = (uint64_t)esp_timer_get_time();
+  if (now - last > 100000ULL) { vTaskDelay(1); last = (uint64_t)esp_timer_get_time(); }
+}
+size_t freeMemory() { return heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
 void log(const char* fmt, ...) {
   char buf[192];
   va_list a; va_start(a, fmt); vsnprintf(buf, sizeof buf, fmt, a); va_end(a);

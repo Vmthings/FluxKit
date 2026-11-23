@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <malloc.h>
 #include "../Platform.h"
 
 namespace fk {
@@ -15,17 +16,35 @@ static uint32_t g_time = 0;
 static bool g_down = false;
 static int g_tx = 0, g_ty = 0;
 
-void* alloc(size_t n) { return calloc(1, n ? n : 1); }
+static size_t g_used = 0;
+static size_t limitBytes() {  // FLUXKIT_MEM_LIMIT_KB=N makes allocations fail beyond N KB (tests out-of-memory handling)
+  static size_t lim = [] { const char* e = getenv("FLUXKIT_MEM_LIMIT_KB"); return e ? (size_t)atol(e) * 1024 : (size_t)0; }();
+  return lim;
+}
+void* alloc(size_t n) {
+  void* p = calloc(1, n ? n : 1);
+  if (!p) return nullptr;
+  size_t u = malloc_usable_size(p);
+  if (limitBytes() && g_used + u > limitBytes()) { free(p); return nullptr; }
+  g_used += u;
+  return p;
+}
 void* allocAligned(size_t n, size_t a) {
   n = (n + a - 1) / a * a;
   void* p = aligned_alloc(a, n ? n : a);
-  if (p) memset(p, 0, n);
+  if (!p) return nullptr;
+  size_t u = malloc_usable_size(p);
+  if (limitBytes() && g_used + u > limitBytes()) { free(p); return nullptr; }
+  memset(p, 0, n);
+  g_used += u;
   return p;
 }
-void release(void* p) { free(p); }
+void release(void* p) { if (p) { g_used -= malloc_usable_size(p); free(p); } }
 uint32_t millis() { return g_time; }
 uint64_t micros() { return (uint64_t)g_time * 1000ULL; }
 void sleepMs(uint32_t) {}
+void yield() {}
+size_t freeMemory() { return 0; }
 void log(const char* fmt, ...) { va_list a; va_start(a, fmt); vprintf(fmt, a); va_end(a); printf("\n"); }
 void init(int) { g_fb.assign((size_t)g_w * g_h, 0); }
 int width() { return g_w; }

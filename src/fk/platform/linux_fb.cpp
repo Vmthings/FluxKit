@@ -91,6 +91,8 @@ void release(void* p) { free(p); }
 uint64_t micros() { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000ULL + t.tv_nsec / 1000; }
 uint32_t millis() { return (uint32_t)(micros() / 1000ULL); }
 void sleepMs(uint32_t ms) { usleep(ms * 1000); }
+void yield() {}
+size_t freeMemory() { long p = sysconf(_SC_AVPHYS_PAGES), s = sysconf(_SC_PAGESIZE); return p > 0 && s > 0 ? (size_t)p * (size_t)s : 0; }
 void log(const char* fmt, ...) {
   va_list a; va_start(a, fmt); printf("[FluxKit] "); vprintf(fmt, a); va_end(a); printf("\n"); fflush(stdout);
 }

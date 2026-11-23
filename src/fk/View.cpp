@@ -98,8 +98,7 @@ Layer* Node::bakeGeneric(BakeEnv& env, Layer* parent) {
   if (tap) {
     if (surf->data) {
       auto dark = std::make_shared<Surface>(b.w, b.h);
-      memcpy(dark->data, surf->data, surf->bytes());
-      raster::dim(*dark, 0.82f);  // pre-rendered "pressed" state
+      if (dark->data) { memcpy(dark->data, surf->data, surf->bytes()); raster::dim(*dark, 0.82f); }  // pre-rendered "pressed" state
       L->frames.push_back(dark);
     }
     L->pressFeedback = true;
@@ -186,8 +185,7 @@ bool Node::rerender(BakeEnv& env, Layer* L) {
     L->frames.push_back(surf);
     if (tap && surf->data) {
       auto dark = std::make_shared<Surface>(b.w, b.h);
-      memcpy(dark->data, surf->data, surf->bytes());
-      raster::dim(*dark, 0.82f);
+      if (dark->data) { memcpy(dark->data, surf->data, surf->bytes()); raster::dim(*dark, 0.82f); }
       L->frames.push_back(dark);
     }
   }

@@ -3,12 +3,14 @@
 
 namespace fk {
 
-static size_t g_live = 0;
+static size_t g_live = 0, g_failed = 0;
+size_t Surface::failedAllocs() { return g_failed; }
 
 Surface::Surface(int w_, int h_) {
   if (w_ <= 0 || h_ <= 0) return;
+  platform::yield();  // long bakes must not starve the idle task / watchdog
   data = (uint32_t*)platform::alloc((size_t)w_ * h_ * 4);
-  if (!data) { platform::log("Surface alloc failed (%dx%d)", w_, h_); return; }
+  if (!data) { if (g_failed++ < 3) platform::log("out of memory: could not allocate a %dx%d surface", w_, h_); return; }
   w = w_; h = h_;
   g_live += bytes();
 }
@@ -20,7 +22,7 @@ size_t Surface::totalBytes() { return g_live; }
 Surface565::Surface565(int w_, int h_) {
   if (w_ <= 0 || h_ <= 0) return;
   data = (uint16_t*)platform::alloc((size_t)w_ * h_ * 2);
-  if (!data) { platform::log("Surface565 alloc failed (%dx%d)", w_, h_); return; }
+  if (!data) { if (g_failed++ < 3) platform::log("out of memory: could not allocate a %dx%d surface", w_, h_); return; }
   w = w_; h = h_;
   g_live += (size_t)w * h * 2;
 }

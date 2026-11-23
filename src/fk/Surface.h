@@ -35,6 +35,7 @@ class Surface {
   bool isOpaque() const;
 
   static size_t totalBytes();  // all live surfaces
+  static size_t failedAllocs();  // allocations that failed (out of memory): the UI is incomplete if > 0
   // Build from user data (e.g. an exported image array)
   static SurfacePtr fromRGB565(const uint16_t* px, int w, int h);
   static SurfacePtr fromARGB(const uint32_t* px, int w, int h, bool alreadyPremultiplied = false);

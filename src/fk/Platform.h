@@ -26,6 +26,11 @@ bool touch(int& x, int& y);  // true while a finger / mouse button is down
 void pump();                 // poll input (M5.update() on M5)
 void powerOff();             // power down (see each backend)
 
+void yield();                // let the idle task run (feeds the watchdog); cheap, throttled
+size_t freeMemory();         // free PSRAM / RAM in bytes, or 0 if unknown
+// Run fn on a thread with a large stack (ESP32: the Arduino loop task has only 8 KB; baking recurses through the view tree)
+void runWithStack(size_t stackBytes, const std::function<void()>& fn);
+
 int cpuCount();
 int defaultRenderThreads();  // 1 on ESP32 (opt in with Config::renderThreads), all cores (max 4) on Linux
 void parallelFor(int count, const std::function<void(int)>& fn);  // fn(0..count-1) spread over worker threads

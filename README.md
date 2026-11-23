@@ -132,14 +132,25 @@ Like everything else it is pre-rendered: each glyph the field can show is render
 * `.material()` blurs what is painted behind it *in the same layer* (and, for popup content, the first screen). Static glass panels work; glass over a different layer does not.
 * Lifted layers draw above static siblings in the same parent.
 * No PNG/JPG decoding (pass pixels via `Surface::fromRGB565/fromARGB`), no kerning (stb_truetype's `kern` table only), vertical `ScrollView` only.
-* You may experience several crashes on the system if you have too much elements. We are working hard to fix this.
+* **Too many elements can exhaust memory.** See *Status* below for what was found and fixed; a serial warning tells you when it happens.
 
 ## Status: read this
-* **Display driver call** in `src/fk/Platform.cpp`: `pushImage(..., rgb565_t*)`. If colors look byte-swapped, build with `-DFK_SWAP565`. If the screen comes up 1280×720, pass `Config{.rotation = N}`; layouts adapt to whatever size M5GFX reports.
-* **Finding your bottleneck:** `fk::begin(Config{.profile = true})` prints compose ms, present ms and screen coverage per frame once a second over serial. If `present` dominates, the display transfer (not FluxKit) is the limit; DMA/double-buffering in `Platform.cpp` is the next step.
-* **Performance numbers are unmeasured on hardware.** The compositor is software (no PPA yet). Small/partial animations (toggles, sliders, popups) should be fine; full-screen transitions blend ~0.9 MP per frame on a 400 MHz core, so expect somewhere around 20–30 fps there. The natural next step is moving layer blits to the P4's PPA behind `Compositor::drawLayer`. Measure `bake()` time and a full-screen `Push` transition first.
-* Touch uses `M5.Touch.getDetail(0)`.
-* Built for **high-performance chips only.** You must have at least 32 MB of PSRAM (or other types, like DDR RAM), and a 360 MHz processor (like the ESP32-P4 or you can also use a RPi Zero 2W.)
+**Requirements:** built for high-performance chips: at least ~32 MB of PSRAM or RAM and a core of roughly 360 MHz or more (ESP32-P4, Raspberry Pi Zero 2 W or better). Every layer is a pre-rendered bitmap, so memory is the limit; `fk::memoryUsed()` reports it.
+
+**What has been verified:** only on a PC (host stub, plus the Linux backend run headless): the whole pipeline, with output inspected as images, a 1-core vs 4-core frame comparison, the PPA logic against a software stand-in, and an out-of-memory fuzz sweep under AddressSanitizer. **Nothing here has been verified by me on a real Tab5, P4 or Pi.**
+
+**Crashes with many elements (reported on hardware).** Not reproduced, but fuzzing the host build with shrinking memory limits found real bugs that match the symptom, now fixed:
+* stb_truetype `assert`ed (= `abort()` = reboot on ESP32) when a glyph allocation failed under low memory: it now has its own reserved scratch arena and never aborts;
+* the frame-buffer tile was used unchecked when its allocation failed;
+* a failed allocation could leave a surface that was later copied (null pointer).
+
+Also added: a throttled `platform::yield()` during bakes so long bakes don't trip the task watchdog; baking and runtime `relayout()` / `spawn()` run on a 32 KB stack (`Config::bakeStackKB`) because the Arduino loop task has only 8 KB and baking recurses through the view tree; and a clear serial warning, `WARNING: ran out of memory while baking`, instead of silently producing a broken UI. The fuzz sweep (126 runs between 150 KB and 14 MB limits) is now clean. If it still crashes on the device, the cause is something the PC can't show: send the serial log (`Config::log` is on by default) and the backtrace (`idf.py monitor`, or the Arduino ESP exception decoder).
+
+**First things to check on the device**
+* **Display driver call** in `src/fk/platform/m5.cpp`: `pushImage(..., rgb565_t*)`. If colors look byte-swapped, build with `-DFK_SWAP565`. If the screen comes up 1280×720, pass `Config{.rotation = N}`; layouts adapt to whatever size is reported.
+* **Finding your bottleneck:** `Config::profile = true` prints compose ms, present ms and screen coverage per frame once a second. If `present` dominates, the display transfer (not FluxKit) is the limit.
+* **Performance numbers are unmeasured on hardware.** Small/partial animations (toggles, sliders, popups) should be fine; full-screen transitions blend ~0.9 MP per frame, so on a 400 MHz core expect somewhere around 20–30 fps on the CPU path. Try `offloadToPPA()` and a second render thread (`Config::renderThreads = 2`) and measure.
+* Touch uses `M5.Touch.getDetail(0)` on M5 boards.
 
 ## Layout
 ```

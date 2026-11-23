@@ -23,6 +23,7 @@ struct Config {
   int renderThreads = 0;                // compose in N horizontal bands. 0 = auto (all cores up to 4 on Linux, 1 on ESP32)
   bool ppa = false;                     // ESP32-P4: offload compositing to the PPA (same as calling fk::offloadToPPA())
   int ppaMinPixels = 4096;              // layers smaller than this stay on the CPU
+  int bakeStackKB = 32;                 // stack for baking (ESP32 only; the Arduino loop task has just 8 KB)
   int keyboardBlur = 34;                // frosted-glass blur behind the keyboard
   bool dismissKeyboardOnTapOutside = true;
   bool profile = false;         // log compose/present ms per frame once a second (find your bottleneck)

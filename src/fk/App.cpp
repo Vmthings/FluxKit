@@ -99,7 +99,7 @@ void bakeBackdrop(ScreenRec& s, Surface& snap) {
   s.backdrop = container(s.layer, G.W, G.H, false);
   for (int k = 1; k <= N; k++) {
     auto lvl = std::make_shared<Surface>(small->w, small->h);
-    if (lvl->data) memcpy(lvl->data, small->data, small->bytes());
+    if (lvl->data && small->data) memcpy(lvl->data, small->data, small->bytes());
     raster::boxBlur(*lvl, std::max(1, (int)std::lround(G.cfg.blurRadius / (float)f * k / N)), 3);
     raster::tint(*lvl, Color(0x000000, (uint8_t)std::lround(std::clamp(G.cfg.scrim, 0.f, 1.f) * 255 * k / N)));
     // Upscale ONCE here (boot), store as dithered RGB565: at runtime a level is a memcpy / integer blend.
@@ -212,6 +212,11 @@ void bakePopup(int i, const Surface* backdrop) {
   BakeEnv env = makeEnv(backdrop);
   p.contentLayer = node->bake(env, p.layer);
   p.contentLayer->hit = true;  // absorbs touches so the "tap outside" catcher doesn't fire
+}
+
+// Baking recurses through the view tree: run it on a roomy stack (matters on ESP32, where the Arduino loop task has 8 KB).
+void onBigStack(const std::function<void()>& f) {
+  platform::runWithStack((size_t)std::max(8, g().cfg.bakeStackKB) * 1024, f);
 }
 
 void rebakeScreen(int i) {
@@ -450,9 +455,15 @@ void popup(const std::string& name, View content, PopupStyle style, bool tapOut)
   g().popups.push_back(std::move(p));
 }
 
+void bakeImpl();
 void bake() {
   auto& G = g();
   if (!G.began) begin();
+  platform::runWithStack((size_t)std::max(8, G.cfg.bakeStackKB) * 1024, [] { bakeImpl(); });
+}
+
+void bakeImpl() {
+  auto& G = g();
   uint32_t t0 = platform::millis();
   std::unique_ptr<Surface> firstSnap;
 
@@ -480,8 +491,14 @@ void bake() {
     Layer* sp = G.splash;
     G.anim.animate(&sp->opacity, 0.f, Animation::bezierInOut(750), [sp]() { splash::release(sp); g().splash = nullptr; });
   }
-  if (G.cfg.log)
-    platform::log("bake done in %u ms, %u KB of pre-rendered surfaces", (unsigned)(platform::millis() - t0), (unsigned)(Surface::totalBytes() / 1024));
+  if (G.cfg.log) {
+    platform::log("bake done in %u ms, %u KB of pre-rendered surfaces, %u KB free", (unsigned)(platform::millis() - t0),
+                  (unsigned)(Surface::totalBytes() / 1024), (unsigned)(platform::freeMemory() / 1024));
+  }
+  if (Surface::failedAllocs() > 0)
+    platform::log("WARNING: ran out of memory while baking (%u allocations failed): the UI is incomplete. "
+                  "Use fewer/smaller elements, Config::blurSteps = 1, fewer screens with popups or text fields.",
+                  (unsigned)Surface::failedAllocs());
 }
 
 void show(const std::string& name, Transition t) {
@@ -601,7 +618,7 @@ void rerender(const std::string& id) {
   if (n == G.nodes.end() || l == G.ids.end()) return;
   BakeEnv env = makeEnv();
   Layer* layer = l->second;
-  if (!n->second->rerender(env, layer)) relayoutContaining(layer);  // not repaintable in place: rebuild its screen
+  if (!n->second->rerender(env, layer)) onBigStack([layer] { relayoutContaining(layer); });  // not repaintable in place: rebuild its screen
 }
 
 void setText(const std::string& id, const std::string& text) {
@@ -613,14 +630,14 @@ void setText(const std::string& id, const std::string& text) {
   Layer* layer = l->second;
   int r = liveSetText(n->second, text, env, layer);
   if (r == 0) platform::log("setText: '%s' contains no Text", id.c_str());
-  else if (r == 2) relayoutContaining(layer);  // grew past its frame: re-lay-out the screen around it
+  else if (r == 2) onBigStack([layer] { relayoutContaining(layer); });  // grew past its frame: re-lay-out the screen around it
 }
 
 void relayout(const std::string& name) {
   auto& G = g();
-  if (name.empty()) { if (G.cur >= 0) rebakeScreen(G.cur); return; }
-  for (size_t i = 0; i < G.screens.size(); i++) if (G.screens[i].name == name) { rebakeScreen((int)i); return; }
-  for (size_t i = 0; i < G.popups.size(); i++) if (G.popups[i].name == name) { rebakePopup((int)i); return; }
+  if (name.empty()) { if (G.cur >= 0) onBigStack([&G] { rebakeScreen(G.cur); }); return; }
+  for (size_t i = 0; i < G.screens.size(); i++) if (G.screens[i].name == name) { onBigStack([i] { rebakeScreen((int)i); }); return; }
+  for (size_t i = 0; i < G.popups.size(); i++) if (G.popups[i].name == name) { onBigStack([i] { rebakePopup((int)i); }); return; }
   platform::log("relayout: unknown screen/popup '%s'", name.c_str());
 }
 
@@ -628,10 +645,14 @@ LayerRef spawn(View v, int x, int y, const Animation& appear) {
   auto& G = g();
   if (!G.dynRoot || !v.valid()) return LayerRef();
   auto node = v.node();
-  Size sz = node->measure(Size{std::max(0, G.W - x), std::max(0, G.H - y)});
-  node->place(Rect{x, y, sz.w, sz.h});
-  BakeEnv env = makeEnv();
-  Layer* L = node->bake(env, G.dynRoot);
+  Layer* L = nullptr;
+  onBigStack([&] {
+    Size sz = node->measure(Size{std::max(0, G.W - x), std::max(0, G.H - y)});
+    node->place(Rect{x, y, sz.w, sz.h});
+    BakeEnv env = makeEnv();
+    L = node->bake(env, G.dynRoot);
+  });
+  if (!L) return LayerRef();
   G.spawned[L] = v;  // keeps the view alive
   if (appear.duration > 0) { L->opacity = 0.f; G.anim.animate(&L->opacity, L->restOpacity, appear); }
   return LayerRef(L);

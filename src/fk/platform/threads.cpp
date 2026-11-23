@@ -84,6 +84,21 @@ class Pool {
 };
 }  // namespace
 
+void runWithStack(size_t stackBytes, const std::function<void()>& fn) {
+#if defined(ESP_PLATFORM)
+  esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
+  cfg.stack_size = stackBytes;
+  cfg.thread_name = "fk-bake";
+  cfg.inherit_cfg = false;
+  esp_pthread_set_cfg(&cfg);
+  std::thread t([&fn] { fn(); });
+  t.join();
+#else
+  (void)stackBytes;
+  fn();  // desktop / Linux main threads have megabytes of stack
+#endif
+}
+
 void parallelFor(int count, const std::function<void(int)>& fn) {
   static Pool pool;
   pool.run(count, fn);

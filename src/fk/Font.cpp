@@ -6,8 +6,18 @@
 #include <map>
 #include <unordered_map>
 
-#define STBTT_malloc(x, u) ((void)(u), fk::platform::alloc(x))
-#define STBTT_free(x, u) ((void)(u), fk::platform::release(x))
+// stb_truetype cannot cope with a failed malloc (it asserts or dereferences NULL), so it gets its own scratch arena,
+// reserved up front and reset for every glyph. On a device an assert is an abort(), i.e. a reboot.
+namespace fk { namespace {
+uint8_t* g_arena = nullptr;
+size_t g_arenaCap = 0, g_arenaUsed = 0;
+bool g_arenaTried = false;
+void* stbAlloc(size_t n);
+void stbFree(void* p);
+}}
+#define STBTT_malloc(x, u) ((void)(u), fk::stbAlloc(x))
+#define STBTT_free(x, u) ((void)(u), fk::stbFree(x))
+#define STBTT_assert(x) ((void)(x))
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
 #include "third_party/stb_truetype.h"
@@ -19,6 +29,25 @@ extern const unsigned char fk_montserrat_semibold_ttf[]; extern const unsigned i
 extern const unsigned char fk_montserrat_bold_ttf[];    extern const unsigned int fk_montserrat_bold_ttf_len;
 
 namespace fk {
+namespace {
+void ensureArena() {
+  if (g_arenaTried) return;
+  g_arenaTried = true;
+  g_arenaCap = 256 * 1024;
+  g_arena = (uint8_t*)platform::alloc(g_arenaCap);
+  if (!g_arena) { g_arenaCap = 0; platform::log("not enough memory for the font scratch arena: text will be missing"); }
+}
+void* stbAlloc(size_t n) {
+  ensureArena();
+  n = (n + 15) & ~(size_t)15;
+  if (g_arena && g_arenaUsed + n <= g_arenaCap) { void* p = g_arena + g_arenaUsed; g_arenaUsed += n; return p; }
+  return platform::alloc(n);  // oversized glyph: fall back to the heap
+}
+void stbFree(void* p) {
+  if (p && g_arena && (uint8_t*)p >= g_arena && (uint8_t*)p < g_arena + g_arenaCap) return;  // arena memory is reset in bulk
+  platform::release(p);
+}
+}  // namespace
 
 struct FontFace::Impl {
   stbtt_fontinfo info;
@@ -75,8 +104,14 @@ const FontFace::Glyph& FontFace::glyph(uint32_t cp, int px) {
     stbtt_GetGlyphBitmapBox(&info, gi, sc, sc, &x0, &y0, &x1, &y1);
     int w = x1 - x0, h = y1 - y0;
     if (w > 0 && h > 0) {
+      ensureArena();
       g.bmp = (uint8_t*)platform::alloc((size_t)w * h);
-      if (g.bmp) stbtt_MakeGlyphBitmap(&info, g.bmp, w, h, w, sc, sc, gi);
+      if (g.bmp && g_arena) {
+        g_arenaUsed = 0;  // fresh scratch space for this glyph
+        stbtt_MakeGlyphBitmap(&info, g.bmp, w, h, w, sc, sc, gi);
+      } else if (g.bmp) {  // no arena (out of memory): skip the glyph rather than risk stb failing mid-way
+        platform::release(g.bmp); g.bmp = nullptr;
+      }
       g.w = (uint16_t)w; g.h = (uint16_t)h;
     }
     g.bx = (int16_t)x0; g.by = (int16_t)y0;

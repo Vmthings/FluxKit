@@ -11,6 +11,7 @@ void Compositor::init(int w, int h) {
   if (tile_) platform::release(tile_);
   size_t bytes = ((size_t)w * h * 2 + 127) & ~(size_t)127;
   tile_ = (uint16_t*)platform::allocAligned(bytes, 128);  // over-aligned: valid PPA output buffer
+  if (!tile_) platform::log("out of memory: cannot allocate the %u KB frame buffer", (unsigned)(bytes / 1024));
   root.w = w; root.h = h;
   root.wclip = Rect{0, 0, w, h};
 }
@@ -356,6 +357,7 @@ void Compositor::snapshot(Surface& out) {
   Rect full{0, 0, w_, h_};
   Rect dummy;
   prepare(dummy);
+  if (!tile_) return;  // framebuffer tile could not be allocated
   composeTo(full, tile_);
   for (int y = 0; y < out.h && y < h_; y++)
     for (int x = 0; x < out.w && x < w_; x++) {
